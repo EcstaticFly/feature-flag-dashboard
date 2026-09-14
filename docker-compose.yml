@@ -1,0 +1,68 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: flags
+      POSTGRES_PASSWORD: flags
+      POSTGRES_DB: flags
+    ports:
+      # Host port 5433 avoids clashing with a locally installed Postgres on 5432.
+      # Containers still reach it as postgres:5432 on the compose network.
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flags -d flags"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-shot: applies pending Drizzle migrations, then exits.
+  # Re-running is safe — applied migrations are tracked in __drizzle_migrations.
+  migrate:
+    build:
+      context: .
+      dockerfile: packages/api/Dockerfile
+    command: ["node", "dist/db/migrate.js"]
+    environment:
+      DATABASE_URL: postgres://flags:flags@postgres:5432/flags
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: packages/api/Dockerfile
+    command: ["node", "dist/index.js"]
+    ports:
+      - "4000:4000"
+    environment:
+      PORT: 4000
+      DATABASE_URL: postgres://flags:flags@postgres:5432/flags
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:4000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  pgdata:

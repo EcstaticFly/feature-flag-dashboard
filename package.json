@@ -1,0 +1,24 @@
+{
+  "name": "feature-flag-dashboard",
+  "private": true,
+  "version": "0.0.0",
+  "author": "Suyash Pandey",
+  "description": "Feature flag dashboard monorepo: API, client SDK, admin dashboard",
+  "engines": {
+    "node": ">=20"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w packages/api",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "test:unit": "npm run test:unit --workspaces --if-present",
+    "db:generate": "npm run db:generate -w packages/api",
+    "db:migrate": "npm run db:migrate -w packages/api",
+    "compose:up": "docker compose up --build -d",
+    "compose:down": "docker compose down"
+  }
+}
