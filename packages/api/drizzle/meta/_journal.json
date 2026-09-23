@@ -8,6 +8,13 @@
       "when": 1789321662656,
       "tag": "0000_tiny_anthem",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1790081007375,
+      "tag": "0001_silent_silver_surfer",
+      "breakpoints": true
     }
   ]
 }

@@ -52,6 +52,13 @@ services:
       PORT: 4000
       DATABASE_URL: postgres://flags:flags@postgres:5432/flags
       REDIS_URL: redis://redis:6379
+      # Dev-only credentials. Real deployments supply these as secrets (M9).
+      JWT_SECRET: ${JWT_SECRET:-dev-only-jwt-secret-change-me-at-least-32-chars}
+      JWT_EXPIRES_IN_SECONDS: ${JWT_EXPIRES_IN_SECONDS:-3600}
+      SDK_API_KEY: ${SDK_API_KEY:-dev-only-sdk-api-key-change-me}
+      # Read only by `node dist/db/seed.js`, not by the running API.
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me-please}
     depends_on:
       migrate:
         condition: service_completed_successfully

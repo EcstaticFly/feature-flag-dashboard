@@ -5,10 +5,16 @@ import { createRedis, pingRedis } from './services/cache/redis.js';
 
 const config = loadConfig();
 
-const { pool } = createDb(config.DATABASE_URL);
+const { pool, db } = createDb(config.DATABASE_URL);
 const redis = createRedis(config.REDIS_URL);
 
 const app = createApp({
+  db,
+  auth: {
+    jwtSecret: config.JWT_SECRET,
+    jwtExpiresInSeconds: config.JWT_EXPIRES_IN_SECONDS,
+    sdkApiKey: config.SDK_API_KEY,
+  },
   checks: {
     postgres: async () => {
       await pool.query('SELECT 1');

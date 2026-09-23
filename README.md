@@ -15,6 +15,9 @@ service (Express + PostgreSQL + Redis), a TypeScript client SDK, and an admin da
 npm install
 docker compose up --build -d      # postgres + redis → migrate (one-shot) → api
 curl -i http://localhost:4000/health
+
+cp packages/api/.env.example packages/api/.env   # then edit the secrets
+npm run db:seed                                  # creates the single admin account
 ```
 
 `docker compose up` runs migrations via the one-shot `migrate` service before `api`
@@ -59,6 +62,48 @@ locally installed Postgres. Inside the compose network the api still uses
 The API process starts and stays up even when a dependency is down (NFR-04); the
 health payload is how you find out which one.
 
+## API
+
+Two credentials, deliberately separate so a client app can never change a flag:
+
+| Credential | Header | Grants |
+|---|---|---|
+| Admin JWT (from `POST /api/auth/login`) | `Authorization: Bearer <token>` | Everything, including all writes |
+| `SDK_API_KEY` | `x-api-key: <key>` | Read-only SDK endpoints, nothing else |
+
+| Method | Endpoint | Auth | Purpose |
+|---|---|---|---|
+| `POST` | `/api/auth/login` | — | `{ email, password }` → `{ token, expiresAt, user }` |
+| `POST` | `/api/flags` | admin | Create a flag → `201` |
+| `GET` | `/api/flags` | admin | List live flags |
+| `GET` | `/api/flags/:key` | admin | One flag |
+| `PATCH` | `/api/flags/:key` | admin | Partial update (the `key` itself is immutable) |
+| `DELETE` | `/api/flags/:key` | admin | Soft delete → `204` |
+| `GET` | `/api/sdk/flags` | SDK key *or* admin | Flag configs for the SDK to evaluate locally |
+
+Errors always use one envelope: `{ "error": { "code", "message", "details"? } }` —
+`400 validation_error` / `invalid_json`, `401 unauthorized`, `404 flag_not_found`,
+`409 flag_key_exists`.
+
+```sh
+TOKEN=$(curl -s -X POST localhost:4000/api/auth/login -H 'content-type: application/json' \
+  -d '{"email":"admin@example.com","password":"..."}' | jq -r .token)
+
+curl -X POST localhost:4000/api/flags -H "Authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"key":"new-checkout-flow","name":"New checkout","rolloutPercentage":25,"enabled":true}'
+
+curl localhost:4000/api/sdk/flags -H "x-api-key: $SDK_API_KEY"
+```
+
+### Audit log
+
+Every create, update and delete writes an `audit_log` row — actor, action, and the
+full before/after flag — **in the same transaction as the change**, so a change is
+never committed without its audit entry. A PATCH that changes nothing writes no row.
+Deletes are soft (`deleted_at`), so audit rows keep pointing at a real flag; the key
+itself becomes reusable, because the unique index only covers live flags.
+
 ## Scripts (repo root)
 
 | Script | What it does |
@@ -70,6 +115,7 @@ health payload is how you find out which one.
 | `npm run test:unit` | Vitest, excluding `*.integration.test.ts` |
 | `npm run db:generate` | Diff `src/db/schema.ts` against `drizzle/` and emit a new SQL migration |
 | `npm run db:migrate` | Apply pending migrations to `DATABASE_URL` |
+| `npm run db:seed` | Create/update the single admin from `ADMIN_EMAIL` + `ADMIN_PASSWORD` |
 | `npm run compose:up` / `compose:down` | Wrapper around `docker compose` |
 
 ### Schema change workflow
@@ -86,6 +132,7 @@ feature-flag-dashboard/
 ├── package.json                 # npm workspaces root
 ├── tsconfig.base.json
 └── packages/
+    ├── core/                    # @feature-flags/core — shared types, ZERO runtime deps
     ├── api/                     # Flag Service API (Express 5, Drizzle, ioredis)
     │   ├── Dockerfile           # build context = repo root
     │   ├── drizzle/             # generated SQL migrations + meta (committed)
@@ -93,16 +140,22 @@ feature-flag-dashboard/
     │   │   ├── index.ts         # entrypoint: config → deps → listen
     │   │   ├── app.ts           # createApp(deps) — testable without a port
     │   │   ├── config.ts        # zod-validated env
-    │   │   ├── db/              # schema.ts, client.ts, migrate.ts
-    │   │   ├── routes/          # health.ts
+    │   │   ├── auth/            # jwt.ts (hand-rolled HS256), password.ts (scrypt)
+    │   │   ├── db/              # schema.ts, client.ts, migrate.ts, seed.ts
+    │   │   ├── middleware/      # auth.ts (two credentials), errors.ts (one envelope)
+    │   │   ├── routes/          # health.ts, auth.ts, flags.ts, sdk.ts
+    │   │   ├── services/flags/  # flag-service.ts — the only place flag SQL lives
     │   │   ├── services/cache/  # redis.ts (fail-fast client)
-    │   │   ├── services/targeting/   (reserved)
-    │   │   ├── middleware/           (reserved — auth)
+    │   │   ├── validation/      # zod schemas for flag input
     │   │   └── integrations/         (reserved — POST /api/integrations/alert)
     │   └── tests/               # *.test.ts (unit), *.integration.test.ts (Testcontainers)
     ├── sdk/                     # @feature-flags/sdk — isEnabled(flagKey, userContext)
     └── dashboard/               # Next.js App Router admin UI (scaffolded in a later milestone)
 ```
+
+`core` exists because the SDK evaluates flags **locally** from cached configs rather
+than asking the API per user — so the evaluator and rule types must be importable by
+both the API and the SDK, and must carry no dependencies into a consumer's app.
 
 ## Environment variables
 
@@ -111,3 +164,7 @@ feature-flag-dashboard/
 | `PORT` | `4000` | |
 | `DATABASE_URL` | `postgres://flags:flags@localhost:5433/flags` | Must be a `postgres://` URL; 5433 is the compose host port |
 | `REDIS_URL` | `redis://localhost:6379` | `redis://` or `rediss://` |
+| `JWT_SECRET` | — (required) | Signs admin tokens; at least 32 characters |
+| `JWT_EXPIRES_IN_SECONDS` | `3600` | Admin session lifetime |
+| `SDK_API_KEY` | — (required) | Read-only key the SDK sends as `x-api-key`; at least 16 characters |
+| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | — | Read by `npm run db:seed` only, not by the running API |

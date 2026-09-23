@@ -11,9 +11,15 @@ let postgres: StartedPostgreSqlContainer;
 let redis: StartedRedisContainer;
 
 function buildApp(databaseUrl: string, redisUrl: string) {
-  const { pool } = createDb(databaseUrl);
+  const { pool, db } = createDb(databaseUrl);
   const redisClient = createRedis(redisUrl);
   const app = createApp({
+    db,
+    auth: {
+      jwtSecret: 'integration-secret-at-least-32-characters-long',
+      jwtExpiresInSeconds: 3600,
+      sdkApiKey: 'integration-sdk-api-key',
+    },
     checks: {
       postgres: async () => {
         await pool.query('SELECT 1');

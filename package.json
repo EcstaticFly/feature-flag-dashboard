@@ -18,6 +18,7 @@
     "test:unit": "npm run test:unit --workspaces --if-present",
     "db:generate": "npm run db:generate -w packages/api",
     "db:migrate": "npm run db:migrate -w packages/api",
+    "db:seed": "npm run db:seed -w packages/api",
     "compose:up": "docker compose up --build -d",
     "compose:down": "docker compose down"
   }

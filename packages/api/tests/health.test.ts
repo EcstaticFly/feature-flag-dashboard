@@ -1,7 +1,19 @@
-import request from 'supertest';
+﻿import request from 'supertest';
 import { describe, expect, it } from 'vitest';
-import { createApp } from '../src/app.js';
+import { createApp, type AppDeps } from '../src/app.js';
+import type { Db } from '../src/db/client.js';
 import type { HealthResponse } from '../src/routes/health.js';
+
+// /health touches neither the database nor auth, so stubs are enough here;
+// the real wiring is covered by the integration tests.
+const STUBS: Pick<AppDeps, 'db' | 'auth'> = {
+  db: {} as Db,
+  auth: {
+    jwtSecret: 'test-secret-that-is-at-least-32-characters-long',
+    jwtExpiresInSeconds: 3600,
+    sdkApiKey: 'test-sdk-api-key-1234',
+  },
+};
 
 const ok = async () => {};
 const failing = async () => {
@@ -11,7 +23,7 @@ const hanging = () => new Promise<void>(() => {});
 
 describe('GET /health', () => {
   it('returns 200 with every check ok when all dependencies are reachable', async () => {
-    const app = createApp({ checks: { postgres: ok, redis: ok } });
+    const app = createApp({ ...STUBS, checks: { postgres: ok, redis: ok } });
 
     const res = await request(app).get('/health');
 
@@ -23,7 +35,7 @@ describe('GET /health', () => {
   });
 
   it('returns 503 and names the failing dependency when one check rejects', async () => {
-    const app = createApp({ checks: { postgres: ok, redis: failing } });
+    const app = createApp({ ...STUBS, checks: { postgres: ok, redis: failing } });
 
     const res = await request(app).get('/health');
 
@@ -39,6 +51,7 @@ describe('GET /health', () => {
 
   it('returns 503 within the timeout instead of hanging when a check never settles', async () => {
     const app = createApp({
+      ...STUBS,
       checks: { postgres: ok, redis: hanging },
       health: { timeoutMs: 100 },
     });
@@ -55,6 +68,7 @@ describe('GET /health', () => {
 
   it('captures a synchronous throw inside a check as an error, not a crash', async () => {
     const app = createApp({
+      ...STUBS,
       checks: {
         postgres: () => {
           throw new Error('boom');

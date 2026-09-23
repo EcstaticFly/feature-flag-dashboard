@@ -1,3 +1,4 @@
+import type { TargetingRule } from '@feature-flags/core';
 import { sql } from 'drizzle-orm';
 import {
   boolean,
@@ -8,30 +9,31 @@ import {
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
-
-/**
- * Flag targeting rules. Shape is intentionally loose at the DB layer — the
- * targeting service (Milestone 3) owns validation and evaluation.
- */
-export type TargetingRules = Record<string, unknown>;
 
 export const flags = pgTable(
   'flags',
   {
     id: uuid('id').primaryKey().defaultRandom(),
     // Slug-format identifier used by the SDK, e.g. `new-checkout-flow`.
-    key: text('key').notNull().unique(),
+    key: text('key').notNull(),
     name: text('name').notNull(),
     description: text('description'),
     enabled: boolean('enabled').notNull().default(false),
     rolloutPercentage: integer('rollout_percentage').notNull().default(0),
-    targetingRules: jsonb('targeting_rules').$type<TargetingRules>().notNull().default({}),
+    targetingRules: jsonb('targeting_rules').$type<TargetingRule[]>().notNull().default([]),
+    // Soft delete: the row stays so audit_log.flag_id keeps resolving.
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
+    // Unique only among live flags, so a deleted key can be reused.
+    uniqueIndex('flags_key_active_idx')
+      .on(t.key)
+      .where(sql`${t.deletedAt} IS NULL`),
     check(
       'flags_rollout_percentage_range',
       sql`${t.rolloutPercentage} >= 0 AND ${t.rolloutPercentage} <= 100`,
@@ -50,6 +52,10 @@ export const users = pgTable('users', {
 
 /** Actor value used when a change originates from the integration endpoint (FR-12). */
 export const SYSTEM_INTEGRATION_ACTOR = 'system:integration';
+
+/** Audit actions recorded for flag mutations. */
+export const AUDIT_ACTIONS = ['create', 'update', 'delete'] as const;
+export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
 export const auditLog = pgTable(
   'audit_log',

@@ -1,9 +1,17 @@
-import express, { type Express, type NextFunction, type Request, type Response } from 'express';
+import express, { type Express } from 'express';
+import type { Db } from './db/client.js';
+import type { AuthConfig } from './middleware/auth.js';
+import { errorHandler, notFoundHandler } from './middleware/errors.js';
+import { createAuthRouter } from './routes/auth.js';
+import { createFlagsRouter } from './routes/flags.js';
 import { createHealthRouter, type HealthCheck, type HealthRouterOptions } from './routes/health.js';
+import { createSdkRouter } from './routes/sdk.js';
 
 export interface AppDeps {
   /** Dependency checks surfaced by GET /health, keyed by dependency name. */
   checks: Record<string, HealthCheck>;
+  db: Db;
+  auth: AuthConfig;
   health?: HealthRouterOptions;
 }
 
@@ -11,23 +19,18 @@ export interface AppDeps {
  * Builds the Express app without binding a port, so tests can drive it with
  * supertest and inject fake dependencies.
  */
-export function createApp({ checks, health }: AppDeps): Express {
+export function createApp({ checks, db, auth, health }: AppDeps): Express {
   const app = express();
   app.disable('x-powered-by');
-  app.use(express.json());
+  app.use(express.json({ limit: '100kb' }));
 
   app.use(createHealthRouter(checks, health));
+  app.use('/api/auth', createAuthRouter(db, auth));
+  app.use('/api/flags', createFlagsRouter(db, auth));
+  app.use('/api/sdk', createSdkRouter(db, auth));
 
-  app.use((_req, res) => {
-    res.status(404).json({ error: 'not found' });
-  });
-
-  // Final error handler — keeps unexpected errors as JSON 500s rather than
-  // Express's HTML default. Express 5 routes rejected promises here automatically.
-  app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-    console.error('[http] unhandled error:', err);
-    res.status(500).json({ error: 'internal server error' });
-  });
+  app.use(notFoundHandler);
+  app.use(errorHandler);
 
   return app;
 }

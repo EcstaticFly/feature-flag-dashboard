@@ -1,0 +1,21 @@
+{
+  "name": "@feature-flags/core",
+  "version": "0.0.0",
+  "description": "Pure flag evaluation logic and shared types. Zero runtime dependencies — this package is bundled into the published SDK.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.0"
+  }
+}
