@@ -13,25 +13,50 @@ service (Express + PostgreSQL + Redis), a TypeScript client SDK, and an admin da
 
 ```sh
 npm install
-docker compose up --build -d      # postgres + redis → migrate (one-shot) → api
+npm run compose:up                # builds images, then postgres + redis → migrate → api
 curl -i http://localhost:4000/health
 
 cp packages/api/.env.example packages/api/.env   # then edit the secrets
 npm run db:seed                                  # creates the single admin account
 ```
 
-`docker compose up` runs migrations via the one-shot `migrate` service before `api`
-starts. Re-running is safe: applied migrations are tracked in
-`drizzle.__drizzle_migrations`, so a second run is a no-op.
+`npm run compose:up` is `docker compose up --build -d`. Migrations run via the one-shot
+`migrate` service before `api` starts; re-running is safe, because applied migrations are
+tracked in `drizzle.__drizzle_migrations`.
+
+### After changing code
+
+**Compose does not rebuild on its own.** A plain `docker compose up -d` reuses the existing
+image, so the container keeps serving the previous build and your change appears to have had
+no effect. After editing anything in `packages/api` or `packages/core`:
+
+```sh
+npm run compose:up          # rebuilds, then restarts
+```
+
+To confirm which build is actually running, grep the compiled output inside the container:
+
+```sh
+docker compose exec -T api grep -c "some string from your change" dist/<path>.js
+```
+
+A `0` means the image is stale — rebuild. (For iterating quickly, prefer `npm run dev`
+below: `tsx watch` picks up source changes immediately. Use the container to verify the
+real artifact.)
 
 ### Running the API outside Docker
 
 ```sh
 cp packages/api/.env.example packages/api/.env   # points at the compose-exposed ports on localhost
-docker compose up -d postgres redis
+docker compose up -d postgres redis               # dependencies only — no api image to rebuild
 npm run db:migrate
+npm run db:seed
 npm run dev                                       # tsx watch, http://localhost:4000
 ```
+
+This is the loop to use while writing code: `tsx watch` reloads on every save, so there is
+no rebuild step. `docker compose up -d postgres redis` is safe without `--build` because
+those are stock images, not built from this repo.
 
 The `.env` file must live in `packages/api/` (not the repo root): dotenv reads from the
 working directory, and npm runs workspace scripts from inside the package. Both
@@ -122,7 +147,7 @@ itself becomes reusable, because the unique index only covers live flags.
 
 1. Edit `packages/api/src/db/schema.ts`.
 2. `npm run db:generate` — commit the generated `drizzle/NNNN_*.sql` and `drizzle/meta/`.
-3. `npm run db:migrate` locally, or `docker compose up --build` (the `migrate` service applies it).
+3. `npm run db:migrate` locally, or `npm run compose:up` (the `migrate` service applies it).
 
 ## Repository layout
 

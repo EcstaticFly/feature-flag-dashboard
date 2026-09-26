@@ -57,8 +57,17 @@ describe('targetingRules', () => {
     ['missing attribute', [{ operator: 'in', values: ['u1'] }]],
     ['non-string values', [{ attribute: 'userId', operator: 'in', values: [1, 2] }]],
     ['extra key', [{ attribute: 'userId', operator: 'in', values: ['u1'], negate: true }]],
+    // `eq` compares against a single value; extra values would be ignored silently.
+    ['eq with multiple values', [{ attribute: 'plan', operator: 'eq', values: ['pro', 'team'] }]],
   ])('rejects %s', (_label, rules) => {
     expect(withRules(rules).success).toBe(false);
+  });
+
+  it('accepts eq with exactly one value, and in with many', () => {
+    expect(withRules([{ attribute: 'plan', operator: 'eq', values: ['pro'] }]).success).toBe(true);
+    expect(
+      withRules([{ attribute: 'plan', operator: 'in', values: ['pro', 'team'] }]).success,
+    ).toBe(true);
   });
 });
 

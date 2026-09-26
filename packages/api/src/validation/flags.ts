@@ -10,12 +10,25 @@ export const flagKeySchema = z
   .max(64)
   .regex(FLAG_KEY_PATTERN, 'must be lowercase letters, numbers and single hyphens');
 
-export const targetingRuleSchema = z.strictObject({
-  attribute: z.string().min(1).max(64),
-  // Mirrors @feature-flags/core so the two definitions cannot drift.
-  operator: z.enum(SUPPORTED_OPERATORS),
-  values: z.array(z.string().min(1).max(256)).min(1).max(100),
-});
+export const targetingRuleSchema = z
+  .strictObject({
+    attribute: z.string().min(1).max(64),
+    // Mirrors @feature-flags/core so the two definitions cannot drift.
+    operator: z.enum(SUPPORTED_OPERATORS),
+    values: z.array(z.string().min(1).max(256)).min(1).max(100),
+  })
+  .superRefine((rule, ctx) => {
+    // The evaluator compares `eq` against values[0]. Accepting extra values
+    // would let a rule look correct while silently ignoring most of it;
+    // `in` is the operator for matching a list.
+    if (rule.operator === 'eq' && rule.values.length !== 1) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['values'],
+        message: "operator 'eq' takes exactly one value; use 'in' to match a list",
+      });
+    }
+  });
 
 export const targetingRulesSchema = z.array(targetingRuleSchema).max(20);
 
