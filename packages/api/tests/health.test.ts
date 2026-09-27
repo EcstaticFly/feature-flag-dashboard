@@ -4,10 +4,13 @@ import { createApp, type AppDeps } from '../src/app.js';
 import type { Db } from '../src/db/client.js';
 import type { HealthResponse } from '../src/routes/health.js';
 
-// /health touches neither the database nor auth, so stubs are enough here;
-// the real wiring is covered by the integration tests.
-const STUBS: Pick<AppDeps, 'db' | 'auth'> = {
+// /health touches none of the database, cache or auth, so stubs are enough
+// here; the real wiring is covered by the integration tests.
+const STUBS: Omit<AppDeps, 'checks' | 'health'> = {
   db: {} as Db,
+  flags: {} as AppDeps['flags'],
+  cache: {} as AppDeps['cache'],
+  fallback: false,
   auth: {
     jwtSecret: 'test-secret-that-is-at-least-32-characters-long',
     jwtExpiresInSeconds: 3600,

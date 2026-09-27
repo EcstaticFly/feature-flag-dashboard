@@ -31,13 +31,26 @@ export function createRedis(redisUrl: string): Redis {
 }
 
 /**
+ * Opens the connection if the client is still lazy.
+ *
+ * This is NOT optional with our options: `lazyConnect` means nothing connects
+ * until asked, and `enableOfflineQueue: false` means a command issued while
+ * disconnected is rejected rather than queued until the connection is ready.
+ * Without this call the very first command of a client's life always fails.
+ * After that ioredis reconnects on its own.
+ */
+export async function ensureConnected(redis: Redis): Promise<void> {
+  if (redis.status === 'wait') {
+    await redis.connect();
+  }
+}
+
+/**
  * PING Redis, connecting first if the client hasn't connected yet.
  * Rejects (does not hang) when Redis is unreachable.
  */
 export async function pingRedis(redis: Redis): Promise<void> {
-  if (redis.status === 'wait') {
-    await redis.connect();
-  }
+  await ensureConnected(redis);
   const reply = await redis.ping();
   if (reply !== 'PONG') {
     throw new Error(`unexpected PING reply: ${reply}`);

@@ -105,6 +105,7 @@ Two credentials, deliberately separate so a client app can never change a flag:
 | `PATCH` | `/api/flags/:key` | admin | Partial update (the `key` itself is immutable) |
 | `DELETE` | `/api/flags/:key` | admin | Soft delete → `204` |
 | `GET` | `/api/sdk/flags` | SDK key *or* admin | Flag configs for the SDK to evaluate locally |
+| `GET` | `/api/flags/:key/evaluate` | SDK key *or* admin | Server-side evaluation for non-JS clients |
 
 Errors always use one envelope: `{ "error": { "code", "message", "details"? } }` —
 `400 validation_error` / `invalid_json`, `401 unauthorized`, `404 flag_not_found`,
@@ -120,6 +121,59 @@ curl -X POST localhost:4000/api/flags -H "Authorization: Bearer $TOKEN" \
 
 curl localhost:4000/api/sdk/flags -H "x-api-key: $SDK_API_KEY"
 ```
+
+### Evaluating a flag server-side
+
+```sh
+curl "localhost:4000/api/flags/new-checkout-flow/evaluate?userId=user_1&attr.plan=pro"   -H "x-api-key: $SDK_API_KEY"
+# {"key":"new-checkout-flow","userId":"user_1","enabled":true,"reason":"rollout_in","bucket":12}
+```
+
+`userId` is optional (absent means anonymous) and any `attr.<name>` parameter becomes a
+targeting attribute. `reason` is one of `kill_switch`, `anonymous`, `rule_match`,
+`rollout_in`, `rollout_out`, or `unavailable`.
+
+This endpoint exists for non-JavaScript clients and for the k6 load test. The JS SDK does
+**not** use it — it fetches whole configs from `/api/sdk/flags` and runs the same
+`@feature-flags/core` evaluator in-process, so its checks cost no network at all. Both paths
+import the same module, which is why they can never disagree about a user.
+
+Every evaluation emits one structured line for a future analytics consumer:
+
+```json
+{"event":"flag_evaluation","ts":"…","flagKey":"…","userId":"…","enabled":true,"reason":"rollout_in","bucket":12}
+```
+
+## Caching and degradation
+
+Three tiers, fastest first:
+
+| Tier | Scope | Invalidated by |
+|---|---|---|
+| In-process map | One API instance | A pub/sub message, or `FLAG_CACHE_TTL_SECONDS` |
+| Redis | Shared by all instances | The mutating instance deleting the key, or the same TTL |
+| PostgreSQL | Source of truth | — |
+
+A mutation writes Postgres, clears both cache tiers, and publishes the changed key on
+`flags:invalidate`. Every other instance drops its in-process copy on that message, which is
+how a change reaches all instances within ~2 s (NFR-02). The TTL is the safety net for a
+message that never arrives: an instance can be stale for at most that long, never
+indefinitely.
+
+**Fail-closed is the documented policy** (`FLAG_FALLBACK_POLICY`). When *no* tier can answer
+— Redis and Postgres both unreachable, for a flag this instance has never cached — evaluation
+returns **`false`** with `reason: "unavailable"`, and HTTP **200**, never an exception. False
+means users keep the behaviour the app had before the flag existed; `fail-open` would expose
+every in-progress feature at 100% during an outage. `/api/sdk/flags` instead returns **503**
+rather than an empty list, because `{"flags":[]}` would tell the SDK that every flag had been
+deleted.
+
+What survives a Redis outage: evaluation (served from Postgres), the SDK flag list, and
+mutations. `/health` reports 503 naming Redis, and the API process stays up.
+
+*Known simplification:* when the cached snapshot expires simultaneously on several instances
+they all reload from Postgres (a thundering herd). Acceptable at this scale; single-flight is
+the fix.
 
 ### Audit log
 
@@ -157,7 +211,7 @@ feature-flag-dashboard/
 ├── package.json                 # npm workspaces root
 ├── tsconfig.base.json
 └── packages/
-    ├── core/                    # @feature-flags/core — shared types, ZERO runtime deps
+    ├── core/                    # @feature-flags/core — bucketing + evaluation + types, ZERO runtime deps
     ├── api/                     # Flag Service API (Express 5, Drizzle, ioredis)
     │   ├── Dockerfile           # build context = repo root
     │   ├── drizzle/             # generated SQL migrations + meta (committed)
@@ -168,9 +222,9 @@ feature-flag-dashboard/
     │   │   ├── auth/            # jwt.ts (hand-rolled HS256), password.ts (scrypt)
     │   │   ├── db/              # schema.ts, client.ts, migrate.ts, seed.ts
     │   │   ├── middleware/      # auth.ts (two credentials), errors.ts (one envelope)
-    │   │   ├── routes/          # health.ts, auth.ts, flags.ts, sdk.ts
+    │   │   ├── routes/          # health.ts, auth.ts, flags.ts, sdk.ts, evaluate.ts
     │   │   ├── services/flags/  # flag-service.ts — the only place flag SQL lives
-    │   │   ├── services/cache/  # redis.ts (fail-fast client)
+    │   │   ├── services/cache/  # redis.ts (fail-fast client), flag-cache.ts (two tiers)
     │   │   ├── validation/      # zod schemas for flag input
     │   │   └── integrations/         (reserved — POST /api/integrations/alert)
     │   └── tests/               # *.test.ts (unit), *.integration.test.ts (Testcontainers)
@@ -178,7 +232,8 @@ feature-flag-dashboard/
     └── dashboard/               # Next.js App Router admin UI (scaffolded in a later milestone)
 ```
 
-`core` exists because the SDK evaluates flags **locally** from cached configs rather
+`core` holds `computeBucket`, `evaluateFlag`/`evaluateFlagDetailed` and the rule types.
+It exists because the SDK evaluates flags **locally** from cached configs rather
 than asking the API per user — so the evaluator and rule types must be importable by
 both the API and the SDK, and must carry no dependencies into a consumer's app.
 
@@ -192,4 +247,6 @@ both the API and the SDK, and must carry no dependencies into a consumer's app.
 | `JWT_SECRET` | — (required) | Signs admin tokens; at least 32 characters |
 | `JWT_EXPIRES_IN_SECONDS` | `3600` | Admin session lifetime |
 | `SDK_API_KEY` | — (required) | Read-only key the SDK sends as `x-api-key`; at least 16 characters |
+| `FLAG_CACHE_TTL_SECONDS` | `30` | TTL on both cache tiers; the safety net for a missed invalidation |
+| `FLAG_FALLBACK_POLICY` | `fail-closed` | `fail-closed` \| `fail-open` — what an unresolvable flag evaluates to |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | — | Read by `npm run db:seed` only, not by the running API |

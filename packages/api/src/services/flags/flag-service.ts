@@ -7,11 +7,15 @@ import type { CreateFlagInput, UpdateFlagInput } from '../../validation/flags.js
 
 /**
  * The flag service is the ONLY place that reads or writes flag rows. Routes call
- * these functions; so does the integration endpoint (Milestone 6), which is why
- * `actor` is a parameter rather than something read from a request.
+ * it; so does the integration endpoint (Milestone 6), which is why `actor` is a
+ * parameter rather than something read from a request.
  *
  * Every mutation writes its audit row inside the same transaction as the change
  * itself: NFR-05 means a change isn't committed unless its audit entry is.
+ *
+ * Use `createFlagService(db, cache)` rather than the raw functions below: it
+ * invalidates the cache after every successful mutation, in one place, so no
+ * caller can forget to.
  */
 
 /** Public representation of a flag — what routes return and audit rows record. */
@@ -70,6 +74,12 @@ export async function listFlags(db: Db): Promise<PublicFlag[]> {
 export async function listSdkFlags(db: Db): Promise<FlagConfig[]> {
   const rows = await db.select().from(flags).where(isNull(flags.deletedAt)).orderBy(asc(flags.key));
   return rows.map(toFlagConfig);
+}
+
+/** One flag's config, or undefined when no live flag has that key. */
+export async function getFlagConfig(db: Db, key: string): Promise<FlagConfig | undefined> {
+  const [row] = await db.select().from(flags).where(liveFlag(key)).limit(1);
+  return row ? toFlagConfig(row) : undefined;
 }
 
 export async function getFlagByKey(db: Db, key: string): Promise<PublicFlag> {
@@ -174,4 +184,60 @@ async function writeAudit(
   newValue: PublicFlag | null,
 ): Promise<void> {
   await tx.insert(auditLog).values({ flagId, actor, action, oldValue, newValue });
+}
+
+/** The slice of the flag cache the service needs — keeps this module Redis-free. */
+export interface FlagInvalidator {
+  invalidate(key: string): Promise<void>;
+}
+
+export interface FlagService {
+  listFlags(): Promise<PublicFlag[]>;
+  listSdkFlags(): Promise<FlagConfig[]>;
+  getFlagByKey(key: string): Promise<PublicFlag>;
+  createFlag(actor: string, input: CreateFlagInput): Promise<PublicFlag>;
+  updateFlag(actor: string, key: string, patch: UpdateFlagInput): Promise<PublicFlag>;
+  softDeleteFlag(actor: string, key: string): Promise<void>;
+}
+
+/**
+ * Binds the service to a database and (optionally) a cache.
+ *
+ * Invalidation happens AFTER the transaction commits: doing it inside would be
+ * wrong if the transaction then rolled back, and doing it before commit could
+ * repopulate the cache with data that never landed. A failed invalidation is
+ * logged but does not fail the request — the cache TTL heals it within seconds.
+ */
+export function createFlagService(db: Db, cache?: FlagInvalidator): FlagService {
+  const invalidate = async (key: string): Promise<void> => {
+    if (!cache) return;
+    try {
+      await cache.invalidate(key);
+    } catch (err) {
+      console.error(`[flags] cache invalidation failed for '${key}':`, (err as Error).message);
+    }
+  };
+
+  return {
+    listFlags: () => listFlags(db),
+    listSdkFlags: () => listSdkFlags(db),
+    getFlagByKey: (key) => getFlagByKey(db, key),
+
+    async createFlag(actor, input) {
+      const flag = await createFlag(db, actor, input);
+      await invalidate(flag.key);
+      return flag;
+    },
+
+    async updateFlag(actor, key, patch) {
+      const flag = await updateFlag(db, actor, key, patch);
+      await invalidate(key);
+      return flag;
+    },
+
+    async softDeleteFlag(actor, key) {
+      await softDeleteFlag(db, actor, key);
+      await invalidate(key);
+    },
+  };
 }

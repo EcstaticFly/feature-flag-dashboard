@@ -1,15 +1,31 @@
 import { createApp } from './app.js';
-import { loadConfig } from './config.js';
+import { fallbackValue, loadConfig } from './config.js';
 import { createDb } from './db/client.js';
+import { createFlagCache } from './services/cache/flag-cache.js';
 import { createRedis, pingRedis } from './services/cache/redis.js';
+import { createFlagService } from './services/flags/flag-service.js';
 
 const config = loadConfig();
 
 const { pool, db } = createDb(config.DATABASE_URL);
+// Two connections: ioredis puts a subscribed client into subscriber mode, where
+// ordinary commands are refused, so publishing and reading need their own.
 const redis = createRedis(config.REDIS_URL);
+const subscriber = createRedis(config.REDIS_URL);
+
+const cache = createFlagCache({
+  redis,
+  subscriber,
+  db,
+  ttlSeconds: config.FLAG_CACHE_TTL_SECONDS,
+});
+const flags = createFlagService(db, cache);
 
 const app = createApp({
   db,
+  flags,
+  cache,
+  fallback: fallbackValue(config.FLAG_FALLBACK_POLICY),
   auth: {
     jwtSecret: config.JWT_SECRET,
     jwtExpiresInSeconds: config.JWT_EXPIRES_IN_SECONDS,
@@ -23,16 +39,24 @@ const app = createApp({
   },
 });
 
+// Subscribing is best-effort: if Redis is down at boot the cache still works
+// (Postgres + TTL), and ioredis resubscribes when the connection returns.
+void cache.start();
+
 // Listen regardless of dependency state: /health reports what's reachable
 // rather than the process refusing to start (NFR-04).
 const server = app.listen(config.PORT, () => {
-  console.log(`[api] listening on http://localhost:${config.PORT}`);
+  console.log(
+    `[api] listening on http://localhost:${config.PORT} ` +
+      `(cache ttl ${config.FLAG_CACHE_TTL_SECONDS}s, ${config.FLAG_FALLBACK_POLICY})`,
+  );
 });
 
 async function shutdown(signal: string): Promise<void> {
   console.log(`[api] ${signal} received, shutting down`);
   server.close();
-  await Promise.allSettled([pool.end(), redis.quit()]);
+  await cache.close();
+  await Promise.allSettled([pool.end(), redis.quit(), subscriber.quit()]);
   process.exit(0);
 }
 

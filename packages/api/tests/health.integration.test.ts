@@ -5,7 +5,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
 import { createDb } from '../src/db/client.js';
 import type { HealthResponse } from '../src/routes/health.js';
+import { createFlagCache } from '../src/services/cache/flag-cache.js';
 import { createRedis, pingRedis } from '../src/services/cache/redis.js';
+import { createFlagService } from '../src/services/flags/flag-service.js';
 
 let postgres: StartedPostgreSqlContainer;
 let redis: StartedRedisContainer;
@@ -13,8 +15,13 @@ let redis: StartedRedisContainer;
 function buildApp(databaseUrl: string, redisUrl: string) {
   const { pool, db } = createDb(databaseUrl);
   const redisClient = createRedis(redisUrl);
+  const subscriber = createRedis(redisUrl);
+  const cache = createFlagCache({ redis: redisClient, subscriber, db, ttlSeconds: 30 });
   const app = createApp({
     db,
+    cache,
+    flags: createFlagService(db, cache),
+    fallback: false,
     auth: {
       jwtSecret: 'integration-secret-at-least-32-characters-long',
       jwtExpiresInSeconds: 3600,
@@ -30,6 +37,7 @@ function buildApp(databaseUrl: string, redisUrl: string) {
   const close = async () => {
     await pool.end();
     redisClient.disconnect();
+    subscriber.disconnect();
   };
   return { app, close };
 }
