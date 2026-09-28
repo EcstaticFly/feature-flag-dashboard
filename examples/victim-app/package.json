@@ -1,0 +1,14 @@
+{
+  "name": "victim-app",
+  "private": true,
+  "version": "0.0.0",
+  "description": "A minimal host app using @feature-flags/sdk — the M4 demo and M9 runbook script",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@feature-flags/sdk": "*"
+  }
+}

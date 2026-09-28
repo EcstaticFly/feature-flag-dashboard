@@ -144,6 +144,50 @@ Every evaluation emits one structured line for a future analytics consumer:
 {"event":"flag_evaluation","ts":"…","flagKey":"…","userId":"…","enabled":true,"reason":"rollout_in","bucket":12}
 ```
 
+## Client SDK
+
+`packages/sdk` is the package a host application installs. It does **not** call the API per
+check: it downloads whole flag configs from `/api/sdk/flags` on a timer and evaluates each
+user in-process with `@feature-flags/core` — the same module the API runs.
+
+```ts
+import { init, isEnabled } from '@feature-flags/sdk';
+
+await init({ apiUrl: process.env.FLAGS_API_URL, apiKey: process.env.FLAGS_API_KEY });
+
+if (isEnabled('new-checkout-flow', { userId: user.id })) { /* ... */ }
+```
+
+- `isEnabled` is **synchronous** and touches only memory — roughly a microsecond per call.
+- Load on the API is proportional to **SDK instances**, not users.
+- `isEnabled` **never throws**; a dead flag service means the last known configs keep
+  serving, then documented defaults.
+- Server-side only: the SDK key must never reach a browser.
+
+See [packages/sdk/README.md](packages/sdk/README.md) for the full API, and
+[examples/victim-app](examples/victim-app) for a runnable demo:
+
+```sh
+FLAGS_API_URL=http://localhost:4000 FLAGS_API_KEY=dev-only-sdk-api-key-change-me   FLAG_KEY=demo-flag REFRESH_MS=5000 node examples/victim-app/index.js
+```
+
+Change the flag's rollout through the API and the printed count follows within
+`REFRESH_MS`, with no restart.
+
+## Design decisions
+
+- **Fail-closed** when no flag source is reachable (see below) — an outage must never switch
+  unfinished features on.
+- **The evaluator lives in `packages/core`**, imported by both the API and the SDK, so the
+  two can never disagree about a user. The bucketing hash is frozen; changing it would
+  reshuffle every user.
+- **The SDK evaluates locally.** *Known simplification:* because of this, the API's
+  per-evaluation log line only sees `/api/flags/:key/evaluate` traffic, not SDK evaluations.
+  A future analytics service would have the SDK batch evaluation counts back to the API.
+- **Soft delete** keeps audit rows valid; a partial unique index lets a deleted key be reused.
+- **v1 omissions:** login rate limiting, refresh tokens, negative caching, single-flight on a
+  simultaneous cache expiry (thundering herd), and a browser SDK build.
+
 ## Caching and degradation
 
 Three tiers, fastest first:
@@ -210,6 +254,7 @@ feature-flag-dashboard/
 ├── docker-compose.yml           # postgres:16, redis:7, migrate (one-shot), api
 ├── package.json                 # npm workspaces root
 ├── tsconfig.base.json
+├── examples/victim-app/         # runnable SDK demo (also the M9 runbook script)
 └── packages/
     ├── core/                    # @feature-flags/core — bucketing + evaluation + types, ZERO runtime deps
     ├── api/                     # Flag Service API (Express 5, Drizzle, ioredis)
@@ -228,7 +273,7 @@ feature-flag-dashboard/
     │   │   ├── validation/      # zod schemas for flag input
     │   │   └── integrations/         (reserved — POST /api/integrations/alert)
     │   └── tests/               # *.test.ts (unit), *.integration.test.ts (Testcontainers)
-    ├── sdk/                     # @feature-flags/sdk — isEnabled(flagKey, userContext)
+    ├── sdk/                     # @feature-flags/sdk — publishable; bundles core, local evaluation
     └── dashboard/               # Next.js App Router admin UI (scaffolded in a later milestone)
 ```
 
