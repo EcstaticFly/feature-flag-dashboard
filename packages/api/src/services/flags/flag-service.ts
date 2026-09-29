@@ -133,6 +133,8 @@ export async function updateFlag(
   actor: string,
   key: string,
   patch: UpdateFlagInput,
+  /** Recorded alongside the audit row — why this change was made. */
+  metadata?: AuditMetadata,
 ): Promise<PublicFlag> {
   return db.transaction(async (tx) => {
     // FOR UPDATE: two concurrent patches of the same flag serialise here, so the
@@ -158,7 +160,7 @@ export async function updateFlag(
       .returning();
 
     const after = toPublicFlag(row!);
-    await writeAudit(tx, after.id, actor, 'update', before, after);
+    await writeAudit(tx, after.id, actor, 'update', before, after, metadata);
     return after;
   });
 }
@@ -189,8 +191,11 @@ async function writeAudit(
   action: AuditAction,
   oldValue: PublicFlag | null,
   newValue: PublicFlag | null,
+  metadata?: AuditMetadata,
 ): Promise<void> {
-  await tx.insert(auditLog).values({ flagId, actor, action, oldValue, newValue });
+  await tx
+    .insert(auditLog)
+    .values({ flagId, actor, action, oldValue, newValue, metadata: metadata ?? null });
 }
 
 /**
@@ -215,7 +220,15 @@ export interface AuditEntry {
   actorLabel: string;
   oldValue: unknown;
   newValue: unknown;
+  /** Why the change happened, when the caller supplied a reason (FR-11). */
+  metadata: AuditMetadata | null;
   createdAt: string;
+}
+
+/** Context an integration attaches to a change it causes. */
+export interface AuditMetadata {
+  reason: string;
+  source: string;
 }
 
 export const AUDIT_DEFAULT_LIMIT = 50;
@@ -307,6 +320,7 @@ export async function getFlagAudit(
       email: users.email,
       oldValue: auditLog.oldValue,
       newValue: auditLog.newValue,
+      metadata: auditLog.metadata,
       createdAt: auditLog.createdAt,
     })
     .from(auditLog)
@@ -324,6 +338,7 @@ export async function getFlagAudit(
     actorLabel: actorLabelFor(row.actor, row.email),
     oldValue: row.oldValue,
     newValue: row.newValue,
+    metadata: (row.metadata as AuditMetadata | null) ?? null,
     createdAt: row.createdAt.toISOString(),
   }));
 }
@@ -341,7 +356,12 @@ export interface FlagService {
   getFlagWithActor(key: string): Promise<FlagListItem>;
   getFlagAudit(key: string, limit?: number): Promise<AuditEntry[]>;
   createFlag(actor: string, input: CreateFlagInput): Promise<PublicFlag>;
-  updateFlag(actor: string, key: string, patch: UpdateFlagInput): Promise<PublicFlag>;
+  updateFlag(
+    actor: string,
+    key: string,
+    patch: UpdateFlagInput,
+    metadata?: AuditMetadata,
+  ): Promise<PublicFlag>;
   softDeleteFlag(actor: string, key: string): Promise<void>;
 }
 
@@ -377,8 +397,8 @@ export function createFlagService(db: Db, cache?: FlagInvalidator): FlagService 
       return flag;
     },
 
-    async updateFlag(actor, key, patch) {
-      const flag = await updateFlag(db, actor, key, patch);
+    async updateFlag(actor, key, patch, metadata) {
+      const flag = await updateFlag(db, actor, key, patch, metadata);
       await invalidate(key);
       return flag;
     },

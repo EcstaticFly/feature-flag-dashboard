@@ -31,6 +31,8 @@ export interface AuditEntry {
   actorLabel: string;
   oldValue: Partial<Flag> | null;
   newValue: Partial<Flag> | null;
+  /** Why the change happened, when an integration supplied a reason. */
+  metadata: { reason: string; source: string } | null;
   createdAt: string;
 }
 

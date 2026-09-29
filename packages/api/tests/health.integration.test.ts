@@ -26,6 +26,7 @@ function buildApp(databaseUrl: string, redisUrl: string) {
       jwtSecret: 'integration-secret-at-least-32-characters-long',
       jwtExpiresInSeconds: 3600,
       sdkApiKey: 'integration-sdk-api-key',
+      integrationApiKey: 'integration-alert-key-abc',
     },
     checks: {
       postgres: async () => {

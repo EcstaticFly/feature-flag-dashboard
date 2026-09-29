@@ -11,6 +11,7 @@ const BASE_ENV = {
   REDIS_URL: 'redis://localhost:6379',
   JWT_SECRET: 'a-secret-that-is-at-least-32-characters-long',
   SDK_API_KEY: 'sdk-key-at-least-16-chars',
+  INTEGRATION_API_KEY: 'integration-key-at-least-16',
 };
 
 describe('fallback policy', () => {

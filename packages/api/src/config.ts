@@ -10,6 +10,9 @@ const envSchema = z.object({
   JWT_EXPIRES_IN_SECONDS: z.coerce.number().int().positive().default(3600),
   // Read-only credential used by the SDK; never grants writes.
   SDK_API_KEY: z.string().min(16, 'must be at least 16 characters'),
+  // Held by a second service (the error tracker) so it can disable a flag in
+  // response to an alert — and do nothing else.
+  INTEGRATION_API_KEY: z.string().min(16, 'must be at least 16 characters'),
   // TTL on both cache tiers — the safety net for a missed pub/sub invalidation.
   FLAG_CACHE_TTL_SECONDS: z.coerce.number().int().positive().default(30),
   // What evaluation returns when no source (Redis or Postgres) can be reached.

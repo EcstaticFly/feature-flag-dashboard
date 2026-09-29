@@ -69,6 +69,15 @@ export const auditLog = pgTable(
     action: text('action').notNull(),
     oldValue: jsonb('old_value'),
     newValue: jsonb('new_value'),
+    /**
+     * Context about WHY a change happened — currently the `reason` and `source`
+     * an integration sends with an alert (FR-11).
+     *
+     * A sibling of the snapshots rather than part of them: old_value/new_value
+     * hold the flag itself, and the dashboard diffs them field by field, so a
+     * reason inside them would render as a phantom field change.
+     */
+    metadata: jsonb('metadata'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('audit_log_flag_id_created_at_idx').on(t.flagId, t.createdAt)],

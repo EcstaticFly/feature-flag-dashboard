@@ -1,12 +1,14 @@
 import { timingSafeEqual } from 'node:crypto';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import { JwtError, verifyJwt } from '../auth/jwt.js';
+import { SYSTEM_INTEGRATION_ACTOR } from '../db/schema.js';
 import { AppError } from './errors.js';
 
 export interface AuthConfig {
   jwtSecret: string;
   jwtExpiresInSeconds: number;
   sdkApiKey: string;
+  integrationApiKey: string;
 }
 
 /** Constant-time string comparison that tolerates differing lengths. */
@@ -70,5 +72,27 @@ export function requireSdkOrAdmin(config: AuthConfig): RequestHandler {
       return;
     }
     next(AppError.unauthorized('valid SDK API key or admin token required'));
+  };
+}
+
+/**
+ * The integration endpoint's own credential.
+ *
+ * Deliberately the ONLY thing accepted there — not an admin token, not the SDK
+ * key. Every audit row that endpoint writes is attributed to
+ * `system:integration`, so accepting a human's token would make that
+ * attribution a lie. It also keeps the blast radius small: this key can switch
+ * a flag off and nothing more, and revoking it disturbs neither the dashboard
+ * nor any SDK.
+ */
+export function requireIntegrationKey(config: AuthConfig): RequestHandler {
+  return (req: Request, _res: Response, next: NextFunction) => {
+    const key = req.get('x-integration-key');
+    if (!key || !safeEqual(key, config.integrationApiKey)) {
+      next(AppError.unauthorized('valid integration key required'));
+      return;
+    }
+    req.actor = { type: 'system', id: SYSTEM_INTEGRATION_ACTOR };
+    next();
   };
 }

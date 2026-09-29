@@ -5,6 +5,7 @@ import { errorHandler, notFoundHandler } from './middleware/errors.js';
 import { createAuthRouter } from './routes/auth.js';
 import { createEvaluateRouter } from './routes/evaluate.js';
 import { createFlagsRouter } from './routes/flags.js';
+import { createIntegrationsRouter } from './integrations/alert.js';
 import { createHealthRouter, type HealthCheck, type HealthRouterOptions } from './routes/health.js';
 import { createSdkRouter } from './routes/sdk.js';
 import type { FlagCache } from './services/cache/flag-cache.js';
@@ -48,6 +49,7 @@ export function createApp({
   app.use('/api/flags', createEvaluateRouter(cache, auth, fallback));
   app.use('/api/flags', createFlagsRouter(flags, auth));
   app.use('/api/sdk', createSdkRouter(cache, auth));
+  app.use('/api/integrations', createIntegrationsRouter(flags, auth));
 
   app.use(notFoundHandler);
   app.use(errorHandler);

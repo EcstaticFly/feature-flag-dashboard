@@ -9,6 +9,7 @@ const AUTH: AuthConfig = {
   jwtSecret: 'test-secret-that-is-at-least-32-characters-long',
   jwtExpiresInSeconds: 3600,
   sdkApiKey: 'test-sdk-api-key-1234',
+    integrationApiKey: 'test-integration-key-1234',
 };
 
 const adminToken = signJwt(

@@ -63,6 +63,21 @@ export const updateFlagSchema = z
 export type CreateFlagInput = z.infer<typeof createFlagSchema>;
 export type UpdateFlagInput = z.infer<typeof updateFlagSchema>;
 
+/**
+ * Payload for POST /api/integrations/alert.
+ *
+ * `reason` and `source` are both required: an alert without them produces an
+ * audit entry that cannot explain why a flag switched off, which defeats the
+ * point of recording it.
+ */
+export const alertSchema = z.strictObject({
+  flagKey: flagKeySchema,
+  reason: z.string().min(1).max(500),
+  source: z.string().min(1).max(100),
+});
+
+export type AlertInput = z.infer<typeof alertSchema>;
+
 /** Query for GET /api/flags/:key/audit. Capping is done in the service. */
 export const auditQuerySchema = z.object({
   limit: z.coerce.number().int().positive().optional(),

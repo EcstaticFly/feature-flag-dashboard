@@ -95,6 +95,7 @@ Two credentials, deliberately separate so a client app can never change a flag:
 |---|---|---|
 | Admin JWT (from `POST /api/auth/login`) | `Authorization: Bearer <token>` | Everything, including all writes |
 | `SDK_API_KEY` | `x-api-key: <key>` | Read-only SDK endpoints, nothing else |
+| `INTEGRATION_API_KEY` | `x-integration-key: <key>` | Disabling a flag via the alert endpoint, nothing else |
 
 | Method | Endpoint | Auth | Purpose |
 |---|---|---|---|
@@ -107,6 +108,7 @@ Two credentials, deliberately separate so a client app can never change a flag:
 | `GET` | `/api/sdk/flags` | SDK key *or* admin | Flag configs for the SDK to evaluate locally |
 | `GET` | `/api/flags/:key/evaluate` | SDK key *or* admin | Server-side evaluation for non-JS clients |
 | `GET` | `/api/flags/:key/audit` | admin | Change history, newest first, with the actor resolved to an email |
+| `POST` | `/api/integrations/alert` | `x-integration-key` | Disables a flag in response to an external alert |
 
 Errors always use one envelope: `{ "error": { "code", "message", "details"? } }` —
 `400 validation_error` / `invalid_json`, `401 unauthorized`, `404 flag_not_found`,
@@ -270,6 +272,30 @@ mutations. `/health` reports 503 naming Redis, and the API process stays up.
 they all reload from Postgres (a thundering herd). Acceptable at this scale; single-flight is
 the fix.
 
+### Integration endpoint
+
+An external service — the error tracker this project is designed to pair with — can switch a
+flag off when it detects a problem:
+
+```sh
+curl -X POST localhost:4000/api/integrations/alert -H "x-integration-key: $INTEGRATION_API_KEY"   -H 'content-type: application/json'   -d '{"flagKey":"checkout-v2","reason":"error rate 12% over 5 minutes","source":"error-tracker"}'
+# -> {"flagKey":"checkout-v2","disabled":true,"alreadyDisabled":false,"auditLogged":true}
+```
+
+The audit entry is attributed to `system:integration` and carries the reason, so the dashboard
+shows not just that a flag went off but **why**. The rollout percentage is left untouched, so
+re-enabling resumes where it left off.
+
+**It is idempotent.** A caller retrying on its own timeouts gets `alreadyDisabled: true,
+auditLogged: false` and no second history entry — always `200`, because a machine that retries
+on non-2xx would otherwise retry forever against a flag already in the state it asked for.
+
+**Its key is its own.** Not the admin JWT, not the SDK key. Every row this endpoint writes is
+attributed to the system, so accepting a human's token would make that attribution a lie — and
+this key can do nothing except switch a flag off.
+
+Unknown or deleted flag → `404`. Missing `reason` or `source` → `400`.
+
 ### Audit log
 
 Every create, update and delete writes an `audit_log` row — actor, action, and the
@@ -324,7 +350,7 @@ feature-flag-dashboard/
     │   │   ├── services/flags/  # flag-service.ts — the only place flag SQL lives
     │   │   ├── services/cache/  # redis.ts (fail-fast client), flag-cache.ts (two tiers)
     │   │   ├── validation/      # zod schemas for flag input
-    │   │   └── integrations/         (reserved — POST /api/integrations/alert)
+    │   │   ├── integrations/      # alert.ts — POST /api/integrations/alert
     │   └── tests/               # *.test.ts (unit), *.integration.test.ts (Testcontainers)
     ├── sdk/                     # @feature-flags/sdk — publishable; bundles core, local evaluation
     └── dashboard/               # Next.js App Router admin UI
@@ -350,6 +376,7 @@ both the API and the SDK, and must carry no dependencies into a consumer's app.
 | `JWT_SECRET` | — (required) | Signs admin tokens; at least 32 characters |
 | `JWT_EXPIRES_IN_SECONDS` | `3600` | Admin session lifetime |
 | `SDK_API_KEY` | — (required) | Read-only key the SDK sends as `x-api-key`; at least 16 characters |
+| `INTEGRATION_API_KEY` | — (required) | Key the alert endpoint accepts as `x-integration-key`; at least 16 characters |
 | `FLAG_CACHE_TTL_SECONDS` | `30` | TTL on both cache tiers; the safety net for a missed invalidation |
 | `FLAG_FALLBACK_POLICY` | `fail-closed` | `fail-closed` \| `fail-open` — what an unresolvable flag evaluates to |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | — | Read by `npm run db:seed` only, not by the running API |

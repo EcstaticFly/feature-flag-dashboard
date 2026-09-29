@@ -13,6 +13,18 @@ export async function login(page: Page): Promise<void> {
   await page.getByLabel('Email').fill(ADMIN_EMAIL);
   await page.getByLabel('Password').fill(ADMIN_PASSWORD);
   await page.getByRole('button', { name: 'Sign in' }).click();
+
+  // Fail with something actionable. An empty users table makes every spec fail
+  // on an inscrutable URL assertion; this says what to actually do about it.
+  const rejected = page.getByText('invalid email or password');
+  await expect
+    .poll(async () => ((await rejected.count()) > 0 ? 'rejected' : page.url()), { timeout: 10_000 })
+    .not.toBe('rejected');
+  if (await rejected.count()) {
+    throw new Error(
+      `the API rejected ${ADMIN_EMAIL}. Has the admin been seeded? Run: npm run db:seed`,
+    );
+  }
   await expect(page).toHaveURL(/\/flags$/);
 }
 

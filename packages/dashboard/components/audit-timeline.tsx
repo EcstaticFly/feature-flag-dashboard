@@ -109,6 +109,19 @@ export function AuditTimeline({ entries }: { entries: AuditEntry[] }) {
                 </ul>
               )}
 
+              {entry.metadata && (
+                /*
+                 * Why an automated change happened. Without this an
+                 * auto-disable appears in the history with no explanation —
+                 * which is the first question anyone asks about one.
+                 */
+                <p className="mt-2 rounded-lg bg-warning-soft px-2.5 py-1.5 text-xs text-ink-muted">
+                  <span className="font-medium text-ink">{entry.metadata.source}</span>
+                  {': '}
+                  {entry.metadata.reason}
+                </p>
+              )}
+
               {entry.action === 'create' && entry.newValue && (
                 <p className="mt-1 text-xs text-ink-muted">
                   Created {display('enabled', entry.newValue.enabled)} at{' '}

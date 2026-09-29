@@ -30,6 +30,7 @@ const app = createApp({
     jwtSecret: config.JWT_SECRET,
     jwtExpiresInSeconds: config.JWT_EXPIRES_IN_SECONDS,
     sdkApiKey: config.SDK_API_KEY,
+    integrationApiKey: config.INTEGRATION_API_KEY,
   },
   checks: {
     postgres: async () => {
