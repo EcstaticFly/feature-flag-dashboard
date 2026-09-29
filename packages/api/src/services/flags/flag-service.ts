@@ -1,7 +1,14 @@
 import type { FlagConfig } from '@feature-flags/core';
-import { and, asc, eq, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client.js';
-import { auditLog, flags, type AuditAction, type Flag } from '../../db/schema.js';
+import {
+  auditLog,
+  flags,
+  SYSTEM_INTEGRATION_ACTOR,
+  users,
+  type AuditAction,
+  type Flag,
+} from '../../db/schema.js';
 import { AppError, isPgError, PG_UNIQUE_VIOLATION } from '../../middleware/errors.js';
 import type { CreateFlagInput, UpdateFlagInput } from '../../validation/flags.js';
 
@@ -186,6 +193,141 @@ async function writeAudit(
   await tx.insert(auditLog).values({ flagId, actor, action, oldValue, newValue });
 }
 
+/**
+ * A flag plus who last touched it.
+ *
+ * Deliberately NOT part of `PublicFlag`: that shape is what gets stored in
+ * `audit_log.old_value` / `new_value`, so adding these here would embed
+ * "last updated by" inside every audit snapshot.
+ */
+export interface FlagListItem extends PublicFlag {
+  /** Email of the last actor, `system:integration`, or null if never changed. */
+  lastUpdatedBy: string | null;
+  lastUpdatedAt: string | null;
+}
+
+export interface AuditEntry {
+  id: string;
+  action: AuditAction;
+  /** Raw actor: a user id, or the literal `system:integration`. */
+  actor: string;
+  /** Something a human can read — an email, or 'System (integration)'. */
+  actorLabel: string;
+  oldValue: unknown;
+  newValue: unknown;
+  createdAt: string;
+}
+
+export const AUDIT_DEFAULT_LIMIT = 50;
+export const AUDIT_MAX_LIMIT = 200;
+
+function actorLabelFor(actor: string, email: string | null): string {
+  if (actor === SYSTEM_INTEGRATION_ACTOR) return 'System (integration)';
+  return email ?? actor;
+}
+
+/**
+ * Newest audit row for the flag row being selected, for "last updated by X".
+ *
+ * The correlation is written with `sql.identifier` rather than by interpolating
+ * `flags.id`: drizzle renders a column inside a template as a bare `"id"`, which
+ * is ambiguous here because both `audit_log` and `users` also have an `id`
+ * (Postgres 42702). It must be qualified as `"flags"."id"`.
+ */
+const LAST_AUDIT = sql<{
+  actor: string | null;
+  email: string | null;
+  createdAt: string | null;
+} | null>`(
+  select json_build_object('actor', a.actor, 'email', u.email, 'createdAt', a.created_at)
+  from ${auditLog} a
+  left join ${users} u on u.id::text = a.actor
+  where a.flag_id = ${sql.identifier('flags')}.${sql.identifier('id')}
+  order by a.created_at desc
+  limit 1
+)`;
+
+/** Flags for the admin UI, each with who last changed it. */
+export async function listFlagsWithActors(db: Db): Promise<FlagListItem[]> {
+  const rows = await db
+    .select({ flag: flags, last: LAST_AUDIT })
+    .from(flags)
+    .where(isNull(flags.deletedAt))
+    .orderBy(asc(flags.key));
+
+  return rows.map((row) => withActor(row.flag, row.last));
+}
+
+export async function getFlagWithActor(db: Db, key: string): Promise<FlagListItem> {
+  const [row] = await db
+    .select({ flag: flags, last: LAST_AUDIT })
+    .from(flags)
+    .where(liveFlag(key))
+    .limit(1);
+
+  if (!row) throw AppError.notFound('flag_not_found', `no flag with key '${key}'`);
+  return withActor(row.flag, row.last);
+}
+
+function withActor(
+  flag: Flag,
+  last: { actor: string | null; email: string | null; createdAt: string | Date | null } | null,
+): FlagListItem {
+  return {
+    ...toPublicFlag(flag),
+    lastUpdatedBy: last?.actor ? actorLabelFor(last.actor, last.email) : null,
+    lastUpdatedAt: last?.createdAt ? new Date(last.createdAt).toISOString() : null,
+  };
+}
+
+/**
+ * Audit history for a flag, newest first.
+ *
+ * Scoped by the LIVE flag's id, never by key: a key can be reused after a soft
+ * delete (the unique index only covers live rows), so querying by key would mix
+ * in the previous flag's history.
+ */
+export async function getFlagAudit(
+  db: Db,
+  key: string,
+  limit = AUDIT_DEFAULT_LIMIT,
+): Promise<AuditEntry[]> {
+  const [flag] = await db
+    .select({ id: flags.id })
+    .from(flags)
+    .where(liveFlag(key))
+    .limit(1);
+  if (!flag) throw AppError.notFound('flag_not_found', `no flag with key '${key}'`);
+
+  const rows = await db
+    .select({
+      id: auditLog.id,
+      action: auditLog.action,
+      actor: auditLog.actor,
+      email: users.email,
+      oldValue: auditLog.oldValue,
+      newValue: auditLog.newValue,
+      createdAt: auditLog.createdAt,
+    })
+    .from(auditLog)
+    // The actor is a bare uuid (or `system:integration`, which has no user row),
+    // so a left join is what turns it into something readable on screen.
+    .leftJoin(users, eq(sql`${users.id}::text`, auditLog.actor))
+    .where(eq(auditLog.flagId, flag.id))
+    .orderBy(desc(auditLog.createdAt))
+    .limit(Math.min(Math.max(limit, 1), AUDIT_MAX_LIMIT));
+
+  return rows.map((row) => ({
+    id: row.id,
+    action: row.action as AuditAction,
+    actor: row.actor,
+    actorLabel: actorLabelFor(row.actor, row.email),
+    oldValue: row.oldValue,
+    newValue: row.newValue,
+    createdAt: row.createdAt.toISOString(),
+  }));
+}
+
 /** The slice of the flag cache the service needs — keeps this module Redis-free. */
 export interface FlagInvalidator {
   invalidate(key: string): Promise<void>;
@@ -193,8 +335,11 @@ export interface FlagInvalidator {
 
 export interface FlagService {
   listFlags(): Promise<PublicFlag[]>;
+  listFlagsWithActors(): Promise<FlagListItem[]>;
   listSdkFlags(): Promise<FlagConfig[]>;
   getFlagByKey(key: string): Promise<PublicFlag>;
+  getFlagWithActor(key: string): Promise<FlagListItem>;
+  getFlagAudit(key: string, limit?: number): Promise<AuditEntry[]>;
   createFlag(actor: string, input: CreateFlagInput): Promise<PublicFlag>;
   updateFlag(actor: string, key: string, patch: UpdateFlagInput): Promise<PublicFlag>;
   softDeleteFlag(actor: string, key: string): Promise<void>;
@@ -220,8 +365,11 @@ export function createFlagService(db: Db, cache?: FlagInvalidator): FlagService 
 
   return {
     listFlags: () => listFlags(db),
+    listFlagsWithActors: () => listFlagsWithActors(db),
     listSdkFlags: () => listSdkFlags(db),
     getFlagByKey: (key) => getFlagByKey(db, key),
+    getFlagWithActor: (key) => getFlagWithActor(db, key),
+    getFlagAudit: (key, limit) => getFlagAudit(db, key, limit),
 
     async createFlag(actor, input) {
       const flag = await createFlag(db, actor, input);

@@ -106,6 +106,7 @@ Two credentials, deliberately separate so a client app can never change a flag:
 | `DELETE` | `/api/flags/:key` | admin | Soft delete → `204` |
 | `GET` | `/api/sdk/flags` | SDK key *or* admin | Flag configs for the SDK to evaluate locally |
 | `GET` | `/api/flags/:key/evaluate` | SDK key *or* admin | Server-side evaluation for non-JS clients |
+| `GET` | `/api/flags/:key/audit` | admin | Change history, newest first, with the actor resolved to an email |
 
 Errors always use one envelope: `{ "error": { "code", "message", "details"? } }` —
 `400 validation_error` / `invalid_json`, `401 unauthorized`, `404 flag_not_found`,
@@ -143,6 +144,56 @@ Every evaluation emits one structured line for a future analytics consumer:
 ```json
 {"event":"flag_evaluation","ts":"…","flagKey":"…","userId":"…","enabled":true,"reason":"rollout_in","bucket":12}
 ```
+
+## Admin dashboard
+
+A Next.js App Router app in `packages/dashboard`: log in, see every flag, change a rollout,
+flip a kill switch, and read who changed what.
+
+```sh
+cp packages/dashboard/.env.example packages/dashboard/.env.local
+npm run dev:dashboard            # http://localhost:3000
+```
+
+**The JWT never reaches the browser.** The login form posts to the dashboard's own Route
+Handler, which calls the Express API server-side and stores the token in an **httpOnly**
+cookie. Server Components read that cookie and forward it as an `Authorization` header — so
+the browser never holds the token, and no CORS is involved. Every API call sets
+`cache: 'no-store'`, because flag state must never look stale to an admin.
+
+`proxy.ts` (Next 16's replacement for `middleware.ts`) redirects anyone without a session
+before a protected page renders, so there is no flash of protected content. An *expired*
+session is a separate case: the token passes the cookie check and the API returns 401, which
+`lib/api.ts` turns into a redirect through `/api/logout`, clearing the cookie and explaining
+why on the login page.
+
+Mutations are Server Actions that call the API and then `revalidatePath`, so a change appears
+in the list without a manual refresh. They **return** failures rather than throwing: a
+duplicate key becomes an inline message on the key field with the typed input preserved, and
+an unreachable API becomes an error panel rather than a blank page.
+
+### End-to-end tests
+
+Playwright is the dashboard's only test suite — the flows span a Route Handler, a Server
+Component fetch and a Server Action, so testing those pieces in isolation would prove little.
+
+```sh
+npm run compose:up               # the API must be running
+npx playwright install chromium  # one time, ~100 MB
+npm run test:e2e
+```
+
+It stays out of `npm test` deliberately, so the default suite needs no dashboard and no
+browser. Playwright builds and serves a production bundle rather than using `next dev`: the
+dev server compiles routes on demand, which can stall a first navigation past an assertion
+timeout. Set `E2E_DEV_SERVER=1` to run against the dev server while iterating on the UI.
+
+**Private browsing works.** Incognito does not block cookies — it gives the window a fresh,
+isolated cookie jar that is discarded on close, which is exactly what a session cookie needs.
+A Playwright browser context *is* an incognito profile, so every one of these specs already
+runs in one, and `e2e/private-browsing.spec.ts` asserts it explicitly. Only a browser
+configured to block all cookies outright would fail, and that breaks every cookie-based login
+on the web.
 
 ## Client SDK
 
@@ -235,6 +286,8 @@ itself becomes reusable, because the unique index only covers live flags.
 | `npm run build` | Compile every package to `dist/` |
 | `npm run typecheck` | `tsc --noEmit` across packages |
 | `npm test` | Vitest in every package — **includes Testcontainers integration tests (needs Docker)** |
+| `npm run test:e2e` | Playwright against the dashboard (needs the API running) |
+| `npm run dev:dashboard` | Start the dashboard on :3000 |
 | `npm run test:unit` | Vitest, excluding `*.integration.test.ts` |
 | `npm run db:generate` | Diff `src/db/schema.ts` against `drizzle/` and emit a new SQL migration |
 | `npm run db:migrate` | Apply pending migrations to `DATABASE_URL` |
@@ -274,7 +327,12 @@ feature-flag-dashboard/
     │   │   └── integrations/         (reserved — POST /api/integrations/alert)
     │   └── tests/               # *.test.ts (unit), *.integration.test.ts (Testcontainers)
     ├── sdk/                     # @feature-flags/sdk — publishable; bundles core, local evaluation
-    └── dashboard/               # Next.js App Router admin UI (scaffolded in a later milestone)
+    └── dashboard/               # Next.js App Router admin UI
+        ├── app/                 # login, flags list + detail, route handlers, server actions
+        ├── components/          # rule builder, audit timeline, UI primitives
+        ├── lib/                 # server-only API client (holds the cookie)
+        ├── proxy.ts             # auth gate (Next 16's middleware)
+        └── e2e/                 # Playwright
 ```
 
 `core` holds `computeBucket`, `evaluateFlag`/`evaluateFlagDetailed` and the rule types.

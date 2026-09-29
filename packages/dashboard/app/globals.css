@@ -1,0 +1,39 @@
+@import 'tailwindcss';
+
+/*
+ * A single light theme, per the milestone (no theme toggle). Colours are
+ * declared as tokens so every component pulls from one palette.
+ */
+@theme {
+  --color-canvas: oklch(98.4% 0.003 247);
+  --color-surface: oklch(100% 0 0);
+  --color-border-subtle: oklch(92.8% 0.006 247);
+  --color-ink: oklch(21% 0.02 258);
+  --color-ink-muted: oklch(52% 0.02 258);
+  --color-brand: oklch(54% 0.19 262);
+  --color-brand-hover: oklch(48% 0.19 262);
+  --color-brand-soft: oklch(96% 0.02 262);
+  --color-success: oklch(62% 0.16 150);
+  --color-success-soft: oklch(96% 0.04 150);
+  --color-danger: oklch(58% 0.21 24);
+  --color-danger-soft: oklch(96% 0.03 24);
+  --color-warning-soft: oklch(97% 0.04 85);
+  --radius-card: 0.75rem;
+}
+
+html {
+  background-color: var(--color-canvas);
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* Visible keyboard focus everywhere, without a ring on mouse clicks. */
+:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}

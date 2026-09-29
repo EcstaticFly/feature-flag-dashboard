@@ -63,6 +63,11 @@ export const updateFlagSchema = z
 export type CreateFlagInput = z.infer<typeof createFlagSchema>;
 export type UpdateFlagInput = z.infer<typeof updateFlagSchema>;
 
+/** Query for GET /api/flags/:key/audit. Capping is done in the service. */
+export const auditQuerySchema = z.object({
+  limit: z.coerce.number().int().positive().optional(),
+});
+
 export const loginSchema = z.strictObject({
   email: z.string().min(1).max(320),
   password: z.string().min(1).max(512),
