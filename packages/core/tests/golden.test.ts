@@ -45,3 +45,55 @@ describe('frozen hash values', () => {
     expect(hashString(input)).toBe(expected);
   });
 });
+
+/*
+ * The accounts the README's demo runbook uses, and the buckets it claims for
+ * them. The runbook says "at 10% only carol is in" and "heidi is in only via the
+ * allowlist" — statements that are true because of these exact numbers.
+ *
+ * Without this, changing the hash would leave a documented, rehearsed demo
+ * quietly wrong, and the first person to notice would be whoever is watching it.
+ */
+describe('demo runbook accounts (README: Demo runbook)', () => {
+  const FLAG = 'new-checkout-flow';
+
+  it.each([
+    ['carol', 2],
+    ['dave', 32],
+    ['alice', 34],
+    ['grace', 39],
+    ['frank', 40],
+    ['bob', 41],
+    ['erin', 57],
+    ['heidi', 85],
+  ])('computeBucket(%j, "new-checkout-flow") === %i', (userId, expected) => {
+    expect(computeBucket(userId, FLAG)).toBe(expected);
+  });
+
+  const inAt = (pct: number) =>
+    ['alice', 'bob', 'carol', 'dave', 'erin', 'frank', 'grace', 'heidi'].filter(
+      (u) => computeBucket(u, FLAG) < pct,
+    );
+
+  it('nobody is in at 0%', () => {
+    expect(inAt(0)).toEqual([]);
+  });
+
+  // The step that makes the demo land: one recognisable account turns on.
+  it('only carol is in at 10%', () => {
+    expect(inAt(10)).toEqual(['carol']);
+  });
+
+  it('six of the eight are in at 50%', () => {
+    expect(inAt(50)).toEqual(['alice', 'bob', 'carol', 'dave', 'frank', 'grace']);
+  });
+
+  // heidi is the furthest out of anyone, which is exactly why the runbook
+  // allowlists her: seeing her turn on at 10% can only be the rule, never luck.
+  it('heidi is the last account a rising rollout would reach', () => {
+    const buckets = ['alice', 'bob', 'carol', 'dave', 'erin', 'frank', 'grace'].map((u) =>
+      computeBucket(u, FLAG),
+    );
+    expect(computeBucket('heidi', FLAG)).toBeGreaterThan(Math.max(...buckets));
+  });
+});

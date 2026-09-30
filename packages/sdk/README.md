@@ -1,9 +1,9 @@
-# @feature-flags/sdk
+# flagpilot
 
 Server-side feature flags with **local evaluation**: no network call per check.
 
 ```ts
-import { init, isEnabled } from '@feature-flags/sdk';
+import { init, isEnabled } from 'flagpilot';
 
 await init({
   apiUrl: process.env.FLAGS_API_URL,

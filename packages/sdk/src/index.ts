@@ -1,10 +1,10 @@
 import { createFlagClient, FlagClientError, type FlagClient, type FlagClientConfig } from './client.js';
 
 /**
- * @feature-flags/sdk — server-side feature flags with local evaluation.
+ * flagpilot — server-side feature flags with local evaluation.
  *
  * ```ts
- * import { init, isEnabled } from '@feature-flags/sdk';
+ * import { init, isEnabled } from 'flagpilot';
  *
  * await init({ apiUrl: process.env.FLAGS_API_URL, apiKey: process.env.FLAGS_API_KEY });
  *

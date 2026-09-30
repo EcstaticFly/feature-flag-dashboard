@@ -1,4 +1,4 @@
-import { createFlagClient, type FlagClient } from '@feature-flags/sdk';
+import { createFlagClient, type FlagClient } from 'flagpilot';
 import { expect, test } from '@playwright/test';
 import { createFlag, deleteFlag, login, uniqueKey } from './helpers';
 

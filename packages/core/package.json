@@ -1,7 +1,8 @@
 {
   "name": "@feature-flags/core",
+  "private": true,
   "version": "0.0.0",
-  "description": "Pure flag evaluation logic and shared types. Zero runtime dependencies — this package is bundled into the published SDK.",
+  "description": "Pure flag evaluation logic and shared types. Zero runtime dependencies \u2014 this package is bundled into the published SDK.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

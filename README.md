@@ -15,7 +15,7 @@ proves it.
   ┌─ writes ───────────────────────────┐   ┌─ reads ─────────────────────────┐
   │                                    │   │                                 │
   │  Admin dashboard (Next.js)         │   │  Host app                       │
-  │  Server Components + Server        │   │  + @feature-flags/sdk           │
+  │  Server Components + Server        │   │  + flagpilot           │
   │  Actions. The JWT lives in an      │   │  isEnabled() is synchronous,    │
   │  httpOnly cookie; the browser      │   │  in-process, and never throws   │
   │  never holds it.                   │   │                                 │
@@ -147,9 +147,19 @@ Postgres is published on **host port 5433** (not 5432) so it can coexist with a
 locally installed Postgres. Inside the compose network the api still uses
 `postgres:5432`. Connect DB tools to `localhost:5433`, user/password/db `flags`.
 
-## Health endpoint
+## Health endpoints
 
-`GET /health` checks every dependency concurrently, each bounded by a 2 s timeout:
+There are two, because "is the process alive" and "can it serve traffic" are different questions
+and conflating them is expensive on free infrastructure.
+
+`GET /health/live` — **always 200**, `{"status":"live"}`, queries nothing. This is what a platform
+health check and a keep-alive ping should poll. Render polls every ~30 s and that cannot be turned
+off; pointing it at `/health` would run a Postgres query and a Redis `PING` forever, which keeps a
+scale-to-zero database (Neon's free tier) permanently awake until its monthly compute allowance is
+gone — quite possibly mid-demo.
+
+`GET /health` checks every dependency concurrently, each bounded by `HEALTH_CHECK_TIMEOUT_MS`
+(2 s by default):
 
 - **200** `{ "status": "ok", ... }` — Postgres and Redis both reachable
 - **503** `{ "status": "degraded", ... }` — at least one dependency unreachable or timed out
@@ -165,7 +175,9 @@ locally installed Postgres. Inside the compose network the api still uses
 ```
 
 The API process starts and stays up even when a dependency is down (NFR-04); the
-health payload is how you find out which one.
+health payload is how you find out which one. `/health/live` keeps answering 200 throughout —
+that is the property a platform health check needs, so a cold database reads as "slow dependency"
+rather than "dead service".
 
 ## API
 
@@ -284,7 +296,7 @@ check: it downloads whole flag configs from `/api/sdk/flags` on a timer and eval
 user in-process with `@feature-flags/core` — the same module the API runs.
 
 ```ts
-import { init, isEnabled } from '@feature-flags/sdk';
+import { init, isEnabled } from 'flagpilot';
 
 await init({ apiUrl: process.env.FLAGS_API_URL, apiKey: process.env.FLAGS_API_KEY });
 
@@ -321,8 +333,8 @@ Four suites. All four must pass for the project to be considered complete.
 A healthy run:
 
 ```
-npm run test:unit    →  api 102, core 54, sdk 69   (225 tests, 15 files)
-npm test             →  api 209, core 54, sdk 69   (332 tests, 24 files)
+npm run test:unit    →  api 111, core 66, sdk 69   (246 tests, 15 files)
+npm test             →  api 218, core 66, sdk 69   (353 tests, 24 files)
 npm run test:e2e     →  26 passed
 npm run load:test    →  exit 0, every threshold green
 ```
@@ -400,6 +412,8 @@ Where this repo departs from [../docs/SRS.md](../docs/SRS.md), and why:
 | The **dashboard is not in `docker-compose`** | It is deployed separately (Vercel), and a container on port 3000 would collide with Playwright's own server. Compose covers the back end, which is what needs orchestrating |
 | **No multi-tenancy, projects or user management** | Out of scope by design: one seeded admin, one flag namespace. There is no signup flow |
 | **RabbitMQ is not used**, though it appears in the wider stack | Nothing here is queue-shaped: a flag write is a single transaction that must be immediately readable. It belongs in System B, where fingerprinting and alerting genuinely are |
+| Render's health check polls **`/health/live`**, not `/health` as M9's wording says | `/health` queries Postgres on every call, and Render polls every ~30 s with no way to slow it down. That would keep Neon's scale-to-zero database permanently awake and exhaust its free compute allowance. `/health` is unchanged and is still the readiness view |
+| Migrations run at **container start**, not as a pre-deploy step | Render's `preDeployCommand` requires a paid instance type. The start command chains the same `migrate` entrypoint M9 asks for, and both scripts wait for the database so a cold Neon pauses the boot instead of failing the deploy |
 | A **circuit breaker** on the Postgres read tier, which the SRS does not mention | Added in M7 after load testing showed a total outage was correct but 6× slower than it needed to be. See [Performance](#performance) |
 
 ## Caching and degradation
@@ -520,6 +534,101 @@ Each run exits non-zero if a threshold is crossed, so these are pass/fail gates 
 reports. Full method, all numbers and the pass/fail criteria per step:
 [docs/milestone-7-load-and-chaos.md](../docs/milestone-7-load-and-chaos.md).
 
+## Deployment
+
+Four free services. The API is defined as code in [`render.yaml`](render.yaml), so the deployment is
+reviewable rather than a set of remembered dashboard clicks.
+
+| Piece | Where | Notes |
+|---|---|---|
+| API | **Render** (Docker, free) | `render.yaml` blueprint; health check on `/health/live` |
+| Postgres | **Neon** (free) | Scales to zero after ~5 min idle. Connection string needs `?sslmode=require` |
+| Redis | **Upstash** (free) | `rediss://` — TLS, enabled by the scheme |
+| Dashboard | **Vercel** | Root directory `packages/dashboard`, one env var: `FLAGS_API_URL` |
+| SDK | **npm** — [`flagpilot`](https://www.npmjs.com/package/flagpilot) | `npm install flagpilot` |
+
+Step-by-step instructions are in
+[docs/milestone-9-deployment.md](../docs/milestone-9-deployment.md). Four things that are easy to
+get wrong, and are worth knowing before you start:
+
+**Migrations run at container start, not as a pre-deploy step.** Render's `preDeployCommand` needs a
+paid instance type, so `render.yaml` chains them into the start command instead:
+`node dist/db/migrate.js && node dist/db/seed.js && node dist/index.js`. Both are idempotent —
+Drizzle tracks applied migrations, and `seedAdmin` upserts — and both **wait for the database first**
+(`src/db/wait.ts`, up to 60 s), so a Neon instance that is asleep when a deploy lands causes a pause
+rather than a failed deploy.
+
+**Raise the connect timeouts.** The defaults (1500 ms) are right for local Docker, where connecting
+is instant. A Neon cold start takes seconds and Upstash adds a cross-region TLS handshake, so at the
+local defaults an ordinary cold start reads as an outage — and five of those in a row open the
+[circuit breaker](#caching-and-degradation), which then fails closed on healthy infrastructure.
+`render.yaml` sets `10000` / `5000` / `8000`.
+
+**Never set `ALLOW_DEV_CREDENTIALS` in a deployment.** Leaving it unset is what makes a forgotten
+secret fail the deploy loudly instead of quietly publishing an unauthenticated service. See
+[Credentials](#credentials-and-why-the-placeholders-are-safe).
+
+**Free services sleep.** Render spins a free web service down after ~15 minutes idle, and the next
+request pays a cold start of up to ~50 s. Point a cron (cron-job.org or similar) at
+`https://<your-api>/health/live` every 10 minutes: it keeps Render warm and, because that endpoint
+touches nothing, it lets Neon sleep. Or simply warm the API by hand two minutes before a demo.
+
+## Demo runbook
+
+A rehearsed sequence that shows the whole system in about five minutes. **The numbers below are
+real**, not illustrative: the bucketing hash is frozen, so these eight accounts land in exactly
+these buckets for the flag `new-checkout-flow`, and
+[`golden.test.ts`](packages/core/tests/golden.test.ts) fails if that ever stops being true.
+
+```
+carol=2  dave=32  alice=34  grace=39  frank=40  bob=41  erin=57  heidi=85
+```
+
+Set up: create a flag `new-checkout-flow`, and run the consumer somewhere visible —
+ideally on a second machine, which is what makes the propagation real rather than a claim:
+
+```sh
+mkdir flagpilot-demo && cd flagpilot-demo && npm init -y && npm install flagpilot express
+# copy examples/victim-app/index.js here, then:
+FLAGS_API_URL=https://<your-api>.onrender.com FLAGS_API_KEY=<your SDK_API_KEY>   FLAG_KEY=new-checkout-flow REFRESH_MS=5000 node index.js
+```
+
+| # | Do this in the dashboard | What the audience sees |
+|---|---|---|
+| 0 | Warm the API first — hit `/health/live` and wait for 200 | A free service that is asleep makes step 1 look broken |
+| 1 | Rollout **0 %**, enabled on | Nobody is in. The feature is shipped but dark |
+| 2 | Rollout **10 %** | **carol** turns on, alone. One account, deterministically |
+| 3 | Reload the page, twice | carol is *still* in. Same user, same bucket, every time — no random assignment |
+| 4 | Rollout **50 %** | Six of the eight: carol, dave, alice, grace, frank, bob |
+| 5 | Back to **10 %**, then allowlist **heidi** (`userId in [heidi]`) | carol **and heidi**. heidi's bucket is 85 — the furthest out of anyone — so this can only be the rule, not luck |
+| 6 | Toggle **Enabled** off | Nobody, instantly, while the rollout still reads 10 %. This is the rollback |
+| 7 | Open the flag's history | Every step above, with who did it and the before/after values |
+
+Then the parts a dashboard cannot show:
+
+```sh
+# 8. An external service disables the flag — and does it twice, to show idempotency
+curl -X POST https://<your-api>/api/integrations/alert   -H "x-integration-key: $INTEGRATION_API_KEY" -H 'content-type: application/json'   -d '{"flagKey":"new-checkout-flow","reason":"error rate 12% over 5 minutes","source":"error-tracker"}'
+# -> {"disabled":true,"alreadyDisabled":false,"auditLogged":true}
+# run it again:
+# -> {"disabled":true,"alreadyDisabled":true,"auditLogged":false}   200, and no second history entry
+```
+
+The history now shows **System (integration)** turning the flag off, with the reason — the
+error-tracking story this project is designed to pair with, and the point at which "we shipped a bug"
+becomes "the system caught it and rolled itself back".
+
+```sh
+# 9. Break the cache and show it degrades rather than falls over
+curl https://<your-api>/health        # 503, naming redis; /health/live is still 200
+curl -H "x-api-key: $SDK_API_KEY" "https://<your-api>/api/flags/new-checkout-flow/evaluate?userId=carol"
+# still answers, served from Postgres. The victim app keeps working throughout
+```
+
+Locally the same step is `docker compose stop redis`, then `docker compose start redis` to recover.
+With *both* tiers down, evaluation returns `200 {"enabled":false,"reason":"unavailable"}` — the
+documented fail-closed policy, measured at 500 req/s in [Performance](#performance).
+
 ## Scripts (repo root)
 
 | Script | What it does |
@@ -550,6 +659,8 @@ reports. Full method, all numbers and the pass/fail criteria per step:
 ```
 feature-flag-dashboard/
 ├── docker-compose.yml           # postgres:16, redis:7, migrate + seed (one-shot), api, k6 (profile: load)
+├── render.yaml                  # Render blueprint for the API — no secret values
+├── LICENSE                      # MIT; copied into packages/sdk so the npm tarball carries it
 ├── package.json                 # npm workspaces root
 ├── tsconfig.base.json
 ├── k6/                          # load + chaos tests (evaluate, chaos, blackout, orchestrator)
@@ -564,7 +675,7 @@ feature-flag-dashboard/
     │   │   ├── app.ts           # createApp(deps) — testable without a port
     │   │   ├── config.ts        # zod-validated env
     │   │   ├── auth/            # jwt.ts (hand-rolled HS256), password.ts (scrypt)
-    │   │   ├── db/              # schema.ts, client.ts, migrate.ts, seed.ts
+    │   │   ├── db/              # schema.ts, client.ts, migrate.ts, seed.ts, wait.ts (cold-start retry)
     │   │   ├── middleware/      # auth.ts (two credentials), errors.ts (one envelope)
     │   │   ├── routes/          # health.ts, auth.ts, flags.ts, sdk.ts, evaluate.ts
     │   │   ├── services/flags/  # flag-service.ts — the only place flag SQL lives
@@ -572,7 +683,7 @@ feature-flag-dashboard/
     │   │   ├── validation/      # zod schemas for flag input
     │   │   ├── integrations/      # alert.ts — POST /api/integrations/alert
     │   └── tests/               # *.test.ts (unit), *.integration.test.ts (Testcontainers)
-    ├── sdk/                     # @feature-flags/sdk — publishable; bundles core, local evaluation
+    ├── sdk/                     # flagpilot — published to npm; bundles core, local evaluation
     └── dashboard/               # Next.js App Router admin UI
         ├── app/                 # login, flags list + detail, route handlers, server actions
         ├── components/          # rule builder, audit timeline, UI primitives
@@ -599,6 +710,9 @@ both the API and the SDK, and must carry no dependencies into a consumer's app.
 | `INTEGRATION_API_KEY` | — (required) | Key the alert endpoint accepts as `x-integration-key`; at least 16 characters |
 | `FLAG_CACHE_TTL_SECONDS` | `30` | TTL on both cache tiers; the safety net for a missed invalidation |
 | `FLAG_FALLBACK_POLICY` | `fail-closed` | `fail-closed` \| `fail-open` — what an unresolvable flag evaluates to |
+| `DB_CONNECT_TIMEOUT_MS` | `1500` | Postgres connect timeout. Raise to ~`10000` for a database that scales to zero — see [Deployment](#deployment) |
+| `REDIS_CONNECT_TIMEOUT_MS` | `1500` | Redis connect timeout. Raise to ~`5000` for a managed instance reached over TLS in another region |
+| `HEALTH_CHECK_TIMEOUT_MS` | `2000` | Per-dependency ceiling for `/health`. Keep it above the two values above |
 | `ALLOW_DEV_CREDENTIALS` | `false` | Permits the public placeholder credentials below. Set only by `docker-compose.yml`; a real deployment must never set it |
 | `FLAG_EVAL_LOG_SAMPLE_RATE` | `1` | Fraction of evaluations that emit the structured log line (0-1); costs ~0.12 ms at p99 at the default |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | — | Read by `npm run db:seed` only, not by the running API |

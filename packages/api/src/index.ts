@@ -7,11 +7,14 @@ import { createFlagService } from './services/flags/flag-service.js';
 
 const config = loadConfig();
 
-const { pool, db } = createDb(config.DATABASE_URL);
+const { pool, db } = createDb(config.DATABASE_URL, {
+  connectTimeoutMs: config.DB_CONNECT_TIMEOUT_MS,
+});
 // Two connections: ioredis puts a subscribed client into subscriber mode, where
 // ordinary commands are refused, so publishing and reading need their own.
-const redis = createRedis(config.REDIS_URL);
-const subscriber = createRedis(config.REDIS_URL);
+const redisOptions = { connectTimeoutMs: config.REDIS_CONNECT_TIMEOUT_MS };
+const redis = createRedis(config.REDIS_URL, redisOptions);
+const subscriber = createRedis(config.REDIS_URL, redisOptions);
 
 const cache = createFlagCache({
   redis,
@@ -39,6 +42,7 @@ const app = createApp({
     },
     redis: () => pingRedis(redis),
   },
+  health: { timeoutMs: config.HEALTH_CHECK_TIMEOUT_MS },
 });
 
 // Subscribing is best-effort: if Redis is down at boot the cache still works

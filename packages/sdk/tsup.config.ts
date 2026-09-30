@@ -11,7 +11,7 @@ export default defineConfig({
   sourcemap: true,
   target: 'node20',
   // Bundle @feature-flags/core INTO dist. It is never published, so leaving it
-  // external would make `npm install @feature-flags/sdk` fail for consumers
+  // external would make `npm install flagpilot` fail for consumers
   // with "Cannot find module '@feature-flags/core'".
   noExternal: ['@feature-flags/core'],
   // Baked in so the x-sdk-version header is correct without reading

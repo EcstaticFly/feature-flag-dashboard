@@ -1,0 +1,105 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+#
+# Defines the API as code, so the deployment is reviewable and reproducible
+# instead of a set of remembered dashboard clicks. Create it with
+# Render → New → Blueprint, pointed at this repository.
+#
+# Postgres and Redis are deliberately NOT declared here. Render's own free
+# Postgres expires after 30 days, and this project targets Neon (which scales to
+# zero) plus Upstash. Both are supplied as connection strings below.
+#
+# NOTE ON SECRETS: every credential is `sync: false`, which means Render prompts
+# for it once and stores it encrypted. No secret value is written in this file,
+# and none should ever be added to it — this file is committed.
+
+services:
+  - type: web
+    name: flag-service-api
+    runtime: docker
+    repo: https://github.com/EcstaticFly/feature-flag-dashboard
+    branch: main
+    plan: free
+    region: oregon
+    dockerfilePath: ./packages/api/Dockerfile
+    # The build context is the repo root: the Dockerfile needs the workspace
+    # lockfile and packages/core, not just packages/api.
+    dockerContext: .
+
+    # Migrations and seeding run at container start, chained ahead of the server.
+    #
+    # M9 asks for a pre-deploy step, and Render has one — but `preDeployCommand`
+    # requires a paid instance type ("available for paid web services, private
+    # services, and background workers"), so on the free plan this is the
+    # equivalent. Both scripts are idempotent: Drizzle tracks applied migrations
+    # in __drizzle_migrations, and seedAdmin upserts the single admin.
+    #
+    # Both wait for the database first (see src/db/wait.ts), so a Neon instance
+    # that is asleep when a deploy lands causes a pause, not a failed deploy.
+    #
+    # On a paid plan, delete this and use instead:
+    #   preDeployCommand: node dist/db/migrate.js && node dist/db/seed.js
+    dockerCommand: sh -c "node dist/db/migrate.js && node dist/db/seed.js && node dist/index.js"
+
+    # Liveness, NOT /health. Render polls this every ~30s and that cannot be
+    # turned off; /health queries Postgres and pings Redis, so pointing Render at
+    # it would keep a scale-to-zero database permanently awake and burn Neon's
+    # free monthly compute allowance. /health/live touches nothing.
+    # /health remains the real readiness check for the runbook and for humans.
+    healthCheckPath: /health/live
+
+    envVars:
+      # ---- supplied by you, once, when the blueprint is created -------------
+      # Neon. Must include ?sslmode=require, and must never be a docker-compose
+      # hostname such as postgres:5432.
+      - key: DATABASE_URL
+        sync: false
+      # Upstash. A rediss:// URL — TLS is required and is enabled by the scheme.
+      - key: REDIS_URL
+        sync: false
+      # Generate each of these separately, and never reuse the repo's public
+      # development placeholders:
+      #   node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
+      - key: JWT_SECRET
+        sync: false
+      - key: SDK_API_KEY
+        sync: false
+      - key: INTEGRATION_API_KEY
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+
+      # ---- non-secret, committed on purpose --------------------------------
+      - key: NODE_ENV
+        value: production
+
+      # Free-tier timeouts. The defaults (1500ms) are tuned for local Docker,
+      # where connecting is instant. Neon takes seconds to wake from zero and
+      # Upstash adds a cross-region TLS handshake, so at the local defaults a
+      # perfectly normal cold start reads as an outage — and five in a row would
+      # open the circuit breaker and fail closed on healthy infrastructure.
+      - key: DB_CONNECT_TIMEOUT_MS
+        value: "10000"
+      - key: REDIS_CONNECT_TIMEOUT_MS
+        value: "5000"
+      # Higher than the two above, so a slow dependency is reported as slow
+      # rather than as down.
+      - key: HEALTH_CHECK_TIMEOUT_MS
+        value: "8000"
+
+      - key: FLAG_CACHE_TTL_SECONDS
+        value: "30"
+      # An outage must never switch unfinished features on.
+      - key: FLAG_FALLBACK_POLICY
+        value: fail-closed
+      # One structured log line per evaluation. Render's free log retention is
+      # short and this costs ~0.12ms at p99 (see the README's Performance
+      # section); turn it down if the logs get noisy.
+      - key: FLAG_EVAL_LOG_SAMPLE_RATE
+        value: "1"
+
+      # ALLOW_DEV_CREDENTIALS is deliberately ABSENT and must stay that way.
+      # Without it the API refuses to start on any of the repository's public
+      # placeholder credentials, so forgetting one of the secrets above fails the
+      # deploy loudly instead of quietly publishing an unauthenticated service.

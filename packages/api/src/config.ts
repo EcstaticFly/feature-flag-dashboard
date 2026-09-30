@@ -29,6 +29,24 @@ const envSchema = z.object({
    */
   FLAG_EVAL_LOG_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(1),
   /**
+   * Connect timeouts, in milliseconds.
+   *
+   * The defaults are tuned for local Docker, where a connection is instant and
+   * failing fast is what makes /health honest. Managed free tiers are the
+   * opposite: Neon scales to zero after a few minutes idle and takes seconds to
+   * wake, and Upstash adds a cross-region TLS handshake. At 1500 ms a perfectly
+   * normal cold start reads as an outage — and five of those in a row open the
+   * circuit breaker, so the API fails closed on healthy infrastructure.
+   *
+   * Hence configurable rather than raised: local behaviour stays identical, and
+   * a deployment sets what its infrastructure actually needs. See the README's
+   * Deployment section for the recommended production values.
+   */
+  DB_CONNECT_TIMEOUT_MS: z.coerce.number().int().positive().default(1500),
+  REDIS_CONNECT_TIMEOUT_MS: z.coerce.number().int().positive().default(1500),
+  /** Per-check ceiling for /health. Raise it wherever a cold start is expected. */
+  HEALTH_CHECK_TIMEOUT_MS: z.coerce.number().int().positive().default(2000),
+  /**
    * Permits the development credentials below. `docker-compose.yml` sets it,
    * because that stack is deliberately zero-configuration; nothing else should.
    */

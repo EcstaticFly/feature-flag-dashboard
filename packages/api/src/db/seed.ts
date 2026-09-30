@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { hashPassword } from '../auth/password.js';
 import { createDb } from './client.js';
 import { users } from './schema.js';
+import { scriptConnectTimeoutMs, waitForDatabase } from './wait.js';
 
 /**
  * Creates (or updates) the single admin account. There is no signup flow —
@@ -20,7 +21,7 @@ export async function seedAdmin(
 ): Promise<{ id: string; email: string; created: boolean }> {
   const normalizedEmail = email.trim().toLowerCase();
   const passwordHash = await hashPassword(password);
-  const { pool, db } = createDb(databaseUrl);
+  const { pool, db } = createDb(databaseUrl, { connectTimeoutMs: scriptConnectTimeoutMs() });
 
   try {
     const existing = await db.select({ id: users.id }).from(users);
@@ -73,7 +74,9 @@ if (isDirectRun) {
     process.exit(1);
   }
 
-  seedAdmin(DATABASE_URL!, ADMIN_EMAIL!, ADMIN_PASSWORD!)
+  // Same reasoning as migrate: this runs at container start on a free tier.
+  waitForDatabase(DATABASE_URL!, { label: 'seed', connectTimeoutMs: scriptConnectTimeoutMs() })
+    .then(() => seedAdmin(DATABASE_URL!, ADMIN_EMAIL!, ADMIN_PASSWORD!))
     .then(({ email, created }) => {
       console.log(`[seed] admin ${created ? 'created' : 'password updated'}: ${email}`);
       process.exit(0);

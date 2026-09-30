@@ -1,5 +1,5 @@
 {
-  "name": "@feature-flags/sdk",
+  "name": "flagpilot",
   "version": "0.1.0",
   "description": "Server-side client SDK for the feature flag dashboard: local evaluation, no network call per check",
   "keywords": [
@@ -32,7 +32,8 @@
     "build": "tsup",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "test:unit": "vitest run"
+    "test:unit": "vitest run",
+    "prepublishOnly": "npm run build"
   },
   "devDependencies": {
     "@feature-flags/core": "*",
@@ -40,5 +41,14 @@
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
     "vitest": "^5.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EcstaticFly/feature-flag-dashboard.git",
+    "directory": "packages/sdk"
+  },
+  "homepage": "https://github.com/EcstaticFly/feature-flag-dashboard/tree/main/packages/sdk#readme",
+  "bugs": {
+    "url": "https://github.com/EcstaticFly/feature-flag-dashboard/issues"
   }
 }

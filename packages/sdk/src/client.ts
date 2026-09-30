@@ -50,7 +50,7 @@ export interface FlagClient {
 /** Thrown from init() for developer errors — never for runtime conditions. */
 export class FlagClientError extends Error {
   constructor(message: string) {
-    super(`@feature-flags/sdk: ${message}`);
+    super(`flagpilot: ${message}`);
     this.name = 'FlagClientError';
   }
 }

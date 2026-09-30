@@ -11,12 +11,22 @@ import { Redis } from 'ioredis';
  * - `maxRetriesPerRequest: 1` — a command is retried at most once on
  *   connection loss before rejecting.
  */
-export function createRedis(redisUrl: string): Redis {
+export interface RedisOptions {
+  /**
+   * Connect timeout in milliseconds. Short by default so a Redis outage costs
+   * latency rather than a hang; raise it for a managed instance reached over TLS
+   * in another region, where the handshake alone can exceed the local budget.
+   * See `REDIS_CONNECT_TIMEOUT_MS`.
+   */
+  connectTimeoutMs?: number;
+}
+
+export function createRedis(redisUrl: string, { connectTimeoutMs = 1500 }: RedisOptions = {}): Redis {
   const redis = new Redis(redisUrl, {
     lazyConnect: true,
     enableOfflineQueue: false,
     maxRetriesPerRequest: 1,
-    connectTimeout: 1500,
+    connectTimeout: connectTimeoutMs,
     // Reconnect with capped backoff so we recover automatically when Redis returns.
     retryStrategy: (times) => Math.min(times * 200, 2000),
   });

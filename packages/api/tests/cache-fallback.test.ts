@@ -45,6 +45,39 @@ describe('fallback policy', () => {
  * standing between them and a real deployment is this guard. It is a security
  * control, which means the important tests are the ones proving it FAILS.
  */
+/*
+ * These exist because the local defaults are wrong for managed free tiers, and
+ * getting them wrong is invisible until the first cold start in production.
+ */
+describe('connect timeouts', () => {
+  it('defaults to the local values, so nothing changes without being asked', () => {
+    const config = loadConfig(BASE_ENV as NodeJS.ProcessEnv);
+    expect(config.DB_CONNECT_TIMEOUT_MS).toBe(1500);
+    expect(config.REDIS_CONNECT_TIMEOUT_MS).toBe(1500);
+    expect(config.HEALTH_CHECK_TIMEOUT_MS).toBe(2000);
+  });
+
+  it('accepts the production values a scale-to-zero database needs', () => {
+    const config = loadConfig({
+      ...BASE_ENV,
+      DB_CONNECT_TIMEOUT_MS: '10000',
+      REDIS_CONNECT_TIMEOUT_MS: '5000',
+      HEALTH_CHECK_TIMEOUT_MS: '8000',
+    } as NodeJS.ProcessEnv);
+    expect(config.DB_CONNECT_TIMEOUT_MS).toBe(10_000);
+    expect(config.REDIS_CONNECT_TIMEOUT_MS).toBe(5_000);
+    expect(config.HEALTH_CHECK_TIMEOUT_MS).toBe(8_000);
+  });
+
+  // A timeout of 0 or -1 would mean "never wait", which is not a tuning choice
+  // but a broken deployment; better to refuse at boot than to fail every query.
+  it.each(['0', '-1', 'soon', '1.5'])('rejects %o rather than guessing', (value) => {
+    expect(() =>
+      loadConfig({ ...BASE_ENV, DB_CONNECT_TIMEOUT_MS: value } as NodeJS.ProcessEnv),
+    ).toThrow(/DB_CONNECT_TIMEOUT_MS/);
+  });
+});
+
 describe('development credential guard', () => {
   const DEV = {
     JWT_SECRET: 'dev-only-jwt-secret-change-me-at-least-32-chars',

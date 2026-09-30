@@ -69,14 +69,37 @@ export async function runHealthChecks(
 }
 
 /**
- * GET /health → 200 only when every dependency check passes; 503 otherwise.
- * Never throws and never hangs: each check is bounded by `timeoutMs`.
+ * Two endpoints, because "is the process alive" and "can it serve traffic" are
+ * different questions and conflating them costs money on free infrastructure.
+ *
+ * GET /health/live → always 200 while the process runs. Touches nothing.
+ * GET /health      → 200 only when every dependency check passes; 503 otherwise.
+ *
+ * Neither throws and neither hangs: each dependency check is bounded by
+ * `timeoutMs`.
  */
 export function createHealthRouter(
   checks: Record<string, HealthCheck>,
   { timeoutMs = 2000 }: HealthRouterOptions = {},
 ): Router {
   const router = Router();
+
+  /*
+   * Liveness. Deliberately queries nothing.
+   *
+   * A platform health check polls constantly and cannot usually be slowed down
+   * — Render is every ~30s. Pointing that at /health would run a Postgres query
+   * and a Redis PING forever, which on a scale-to-zero database (Neon's free
+   * tier) means it never sleeps and burns its monthly compute allowance until
+   * the database is suspended, quite possibly mid-demo.
+   *
+   * So the platform and the keep-alive ping use this, which proves the process
+   * is up and answering HTTP, and /health stays the honest readiness view for
+   * humans and the runbook.
+   */
+  router.get('/health/live', (_req, res) => {
+    res.status(200).json({ status: 'live' });
+  });
 
   router.get('/health', async (_req, res) => {
     const body = await runHealthChecks(checks, timeoutMs);

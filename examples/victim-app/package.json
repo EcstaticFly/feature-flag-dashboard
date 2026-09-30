@@ -2,13 +2,14 @@
   "name": "victim-app",
   "private": true,
   "version": "0.0.0",
-  "description": "A minimal host app using @feature-flags/sdk — the M4 demo and M9 runbook script",
+  "description": "A minimal host app using flagpilot \u2014 the M4 demo and the M9 runbook script",
   "type": "module",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "@feature-flags/sdk": "*"
+    "express": "^5.1.0",
+    "flagpilot": "^0.1.0"
   }
 }

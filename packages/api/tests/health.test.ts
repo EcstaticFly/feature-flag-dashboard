@@ -25,6 +25,45 @@ const failing = async () => {
 };
 const hanging = () => new Promise<void>(() => {});
 
+/*
+ * Liveness is what Render's health check polls, so the property that matters is
+ * that it stays 200 when everything else is broken. If it ever followed the
+ * dependency checks, a Neon cold start would look like a dead service and the
+ * platform would refuse the deploy.
+ */
+describe('GET /health/live', () => {
+  it('returns 200 even when every dependency check fails', async () => {
+    const app = createApp({ ...STUBS, checks: { postgres: failing, redis: failing } });
+    const res = await request(app).get('/health/live');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ status: 'live' });
+  });
+
+  it('returns 200 even when every dependency check hangs', async () => {
+    const app = createApp({ ...STUBS, checks: { postgres: hanging, redis: hanging } });
+    // No timeout is involved: nothing is awaited, so this cannot be slow.
+    const res = await request(app).get('/health/live');
+    expect(res.status).toBe(200);
+  });
+
+  it('never invokes the dependency checks at all', async () => {
+    let calls = 0;
+    const counted = async () => {
+      calls += 1;
+    };
+    const app = createApp({ ...STUBS, checks: { postgres: counted, redis: counted } });
+
+    await request(app).get('/health/live').expect(200);
+    // The whole point: polling this every 30s must not wake a scale-to-zero
+    // database. One query here would defeat the endpoint's reason for existing.
+    expect(calls).toBe(0);
+
+    // …whereas /health does run them, so the two are genuinely different.
+    await request(app).get('/health').expect(200);
+    expect(calls).toBe(2);
+  });
+});
+
 describe('GET /health', () => {
   it('returns 200 with every check ok when all dependencies are reachable', async () => {
     const app = createApp({ ...STUBS, checks: { postgres: ok, redis: ok } });

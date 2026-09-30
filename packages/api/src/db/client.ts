@@ -4,16 +4,23 @@ import * as schema from './schema.js';
 
 export type Db = ReturnType<typeof createDb>['db'];
 
-/**
- * Creates a pg Pool and a Drizzle instance bound to it.
- *
- * `connectionTimeoutMillis` is deliberately short: when Postgres is unreachable
- * we want callers (notably /health) to get a rejection quickly, not a hang.
- */
-export function createDb(databaseUrl: string) {
+export interface DbOptions {
+  /**
+   * How long to wait for a connection before rejecting.
+   *
+   * Short by default: when Postgres is unreachable, callers (notably /health)
+   * should get a rejection quickly rather than a hang. Raise it for a managed
+   * database that scales to zero — waking Neon takes seconds, and treating that
+   * as an outage is worse than waiting for it. See `DB_CONNECT_TIMEOUT_MS`.
+   */
+  connectTimeoutMs?: number;
+}
+
+/** Creates a pg Pool and a Drizzle instance bound to it. */
+export function createDb(databaseUrl: string, { connectTimeoutMs = 1500 }: DbOptions = {}) {
   const pool = new pg.Pool({
     connectionString: databaseUrl,
-    connectionTimeoutMillis: 1500,
+    connectionTimeoutMillis: connectTimeoutMs,
     max: 10,
   });
 
