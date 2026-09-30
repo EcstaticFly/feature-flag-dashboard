@@ -2,6 +2,7 @@
   "name": "@feature-flags/api",
   "private": true,
   "version": "0.0.0",
+  "author": "Suyash Pandey (https://github.com/EcstaticFly)",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {

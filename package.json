@@ -2,7 +2,7 @@
   "name": "feature-flag-dashboard",
   "private": true,
   "version": "0.0.0",
-  "author": "Suyash Pandey",
+  "author": "Suyash Pandey (https://github.com/EcstaticFly)",
   "description": "Feature flag dashboard monorepo: API, client SDK, admin dashboard",
   "engines": {
     "node": ">=20"

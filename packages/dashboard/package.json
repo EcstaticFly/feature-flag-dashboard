@@ -2,6 +2,7 @@
   "name": "@feature-flags/dashboard",
   "private": true,
   "version": "0.0.0",
+  "author": "Suyash Pandey (https://github.com/EcstaticFly)",
   "description": "Admin dashboard for the feature flag service (Next.js App Router)",
   "type": "module",
   "scripts": {

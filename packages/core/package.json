@@ -2,6 +2,7 @@
   "name": "@feature-flags/core",
   "private": true,
   "version": "0.0.0",
+  "author": "Suyash Pandey (https://github.com/EcstaticFly)",
   "description": "Pure flag evaluation logic and shared types. Zero runtime dependencies \u2014 this package is bundled into the published SDK.",
   "type": "module",
   "main": "dist/index.js",
