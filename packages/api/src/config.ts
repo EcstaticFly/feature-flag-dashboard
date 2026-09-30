@@ -28,9 +28,40 @@ const envSchema = z.object({
    * of the README for what it actually costs.
    */
   FLAG_EVAL_LOG_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(1),
+  /**
+   * Permits the development credentials below. `docker-compose.yml` sets it,
+   * because that stack is deliberately zero-configuration; nothing else should.
+   */
+  ALLOW_DEV_CREDENTIALS: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
 });
 
 export type Config = z.infer<typeof envSchema>;
+
+/**
+ * The placeholder credentials committed to this repository.
+ *
+ * They are not secrets and were never meant to be: they sit in `.env.example`,
+ * `docker-compose.yml`, the README and the k6 scripts so that a clean clone runs
+ * with no configuration. That convenience is only safe while they cannot reach a
+ * real deployment by accident — anyone who can read this repo could sign an
+ * admin token with the JWT secret below, so a deployment using it has no
+ * authentication at all. Hence the guard in `loadConfig`.
+ */
+const DEV_CREDENTIALS = {
+  JWT_SECRET: 'dev-only-jwt-secret-change-me-at-least-32-chars',
+  SDK_API_KEY: 'dev-only-sdk-api-key-change-me',
+  INTEGRATION_API_KEY: 'dev-only-integration-key-change-me',
+} as const;
+
+/** Every credential still set to this repository's public placeholder value. */
+export function devCredentialsInUse(config: Config): string[] {
+  return (Object.keys(DEV_CREDENTIALS) as (keyof typeof DEV_CREDENTIALS)[]).filter(
+    (key) => config[key] === DEV_CREDENTIALS[key],
+  );
+}
 
 /** Parses process.env; throws a readable error listing every missing/invalid variable. */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -41,6 +72,23 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       .join('\n');
     throw new Error(`Invalid environment configuration:\n${issues}`);
   }
+
+  // Deliberately outside the zod schema: the check spans several fields, and its
+  // message has to name the offending ones and say what to do about them.
+  const placeholders = devCredentialsInUse(parsed.data);
+  if (placeholders.length > 0 && !parsed.data.ALLOW_DEV_CREDENTIALS) {
+    const verb = placeholders.length === 1 ? 'is' : 'are';
+    throw new Error(
+      [
+        `Refusing to start: ${placeholders.join(', ')} ${verb} still set to this ` +
+          "repository's development placeholder, which is public.",
+        'Generate real values with:',
+        `  node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"`,
+        'Set ALLOW_DEV_CREDENTIALS=true only for a throwaway local stack.',
+      ].join('\n'),
+    );
+  }
+
   return parsed.data;
 }
 

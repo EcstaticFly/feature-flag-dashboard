@@ -32,11 +32,21 @@ export function randomUser() {
   return USERS[Math.floor(Math.random() * USERS.length)];
 }
 
+/**
+ * Requests made while preparing a run, tagged so they stay out of the result.
+ *
+ * This matters: setupFlag() DELETEs the flag before recreating it, which is a
+ * 404 on a fresh database. Counted globally that shows up as a non-zero
+ * `failed %` on a run where every single evaluation succeeded — a number that
+ * invites exactly the wrong conclusion about the gate.
+ */
+const SETUP_TAGS = { endpoint: 'setup' };
+
 function adminToken() {
   const res = http.post(
     `${API_URL}/api/auth/login`,
     JSON.stringify({ email: ADMIN_EMAIL, password: ADMIN_PASSWORD }),
-    { headers: { 'content-type': 'application/json' } },
+    { headers: { 'content-type': 'application/json' }, tags: SETUP_TAGS },
   );
   if (res.status !== 200) {
     fail(
@@ -53,8 +63,12 @@ function adminToken() {
  */
 export function setupFlag() {
   const token = adminToken();
-  const auth = { headers: { 'content-type': 'application/json', Authorization: `Bearer ${token}` } };
+  const auth = {
+    headers: { 'content-type': 'application/json', Authorization: `Bearer ${token}` },
+    tags: SETUP_TAGS,
+  };
 
+  // 404 when the flag does not exist yet; tagged as setup, so it is not a result.
   http.del(`${API_URL}/api/flags/${FLAG_KEY}`, null, auth);
 
   const created = http.post(
@@ -136,6 +150,13 @@ function textSummary(data, counters, title, nfr, target) {
   const get = (metric, field) => (m[metric] && m[metric].values[field] != null ? m[metric].values[field] : NaN);
   const ms = (v) => (Number.isNaN(v) ? '   n/a' : `${v.toFixed(2)} ms`);
 
+  // The sub-metric exists because each script sets a threshold on it. Falling
+  // back keeps the summary honest rather than printing n/a if that ever changes.
+  const failedRate = (() => {
+    const scoped = get('http_req_failed{endpoint:evaluate}', 'rate');
+    return Number.isNaN(scoped) ? get('http_req_failed', 'rate') : scoped;
+  })();
+
   const rule = (label) => `  ── ${label} `.padEnd(58, '─');
 
   return [
@@ -147,7 +168,7 @@ function textSummary(data, counters, title, nfr, target) {
     // would pass and prove nothing. Naming the target makes that unmissable.
     ...(target ? [`  target              ${target}`] : []),
     `  requests            ${get('http_reqs', 'count')} (${get('http_reqs', 'rate').toFixed(1)}/s)`,
-    `  failed              ${(get('http_req_failed', 'rate') * 100).toFixed(3)} %`,
+    `  failed              ${(failedRate * 100).toFixed(3)} %`,
     `  checks              ${(get('checks', 'rate') * 100).toFixed(2)} %`,
     // A missing counter prints 0, not n/a: k6 omits a counter never incremented,
     // and for these counters "never incremented" is exactly the passing result.

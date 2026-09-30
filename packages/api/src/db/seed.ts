@@ -37,6 +37,9 @@ export async function seedAdmin(
   }
 }
 
+/** The admin password committed to `.env.example` and `docker-compose.yml`. */
+const DEV_ADMIN_PASSWORD = 'change-me-please';
+
 const isDirectRun =
   process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
@@ -52,6 +55,21 @@ if (isDirectRun) {
   }
   if (ADMIN_PASSWORD!.length < 12) {
     console.error('[seed] ADMIN_PASSWORD must be at least 12 characters');
+    process.exit(1);
+  }
+  /*
+   * The placeholder password is committed to this repo, so seeding a real
+   * deployment with it would publish the admin account. It passes the length
+   * check above, which is exactly why it needs naming explicitly.
+   *
+   * Same opt-in as the API's credential guard: docker-compose sets it because
+   * that stack is throwaway by design.
+   */
+  if (ADMIN_PASSWORD === DEV_ADMIN_PASSWORD && process.env.ALLOW_DEV_CREDENTIALS !== 'true') {
+    console.error(
+      "[seed] refusing to seed: ADMIN_PASSWORD is this repository's public placeholder.\n" +
+        '[seed] set a real password, or ALLOW_DEV_CREDENTIALS=true for a local stack.',
+    );
     process.exit(1);
   }
 

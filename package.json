@@ -17,7 +17,7 @@
     "typecheck": "npm run build -w packages/core && npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "test:unit": "npm run test:unit --workspaces --if-present",
-    "test:e2e": "npm run test:e2e -w packages/dashboard",
+    "test:e2e": "npm run build -w packages/core && npm run build -w packages/sdk && npm run test:e2e -w packages/dashboard",
     "dev:dashboard": "npm run dev -w packages/dashboard",
     "db:generate": "npm run db:generate -w packages/api",
     "db:migrate": "npm run db:migrate -w packages/api",

@@ -41,6 +41,27 @@ services:
         condition: service_healthy
     restart: "no"
 
+  # One-shot: creates (or re-syncs) the single admin, then exits. Runs on every
+  # `up` so a clean clone reaches a working login with no manual step. Note that
+  # seedAdmin upserts: it rotates the password to ADMIN_PASSWORD each time, which
+  # makes a forgotten password recoverable without SQL, but also means a password
+  # changed elsewhere does not survive the next `up`.
+  seed:
+    build:
+      context: .
+      dockerfile: packages/api/Dockerfile
+    command: ["node", "dist/db/seed.js"]
+    environment:
+      DATABASE_URL: postgres://flags:flags@postgres:5432/flags
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me-please}
+      # See the api service below.
+      ALLOW_DEV_CREDENTIALS: ${ALLOW_DEV_CREDENTIALS:-true}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
   api:
     build:
       context: .
@@ -52,7 +73,24 @@ services:
       PORT: 4000
       DATABASE_URL: postgres://flags:flags@postgres:5432/flags
       REDIS_URL: redis://redis:6379
-      # Dev-only credentials. Real deployments supply these as secrets (M9).
+      # This file is committed, so the values written inline below are PUBLIC.
+      # They are not secrets: they exist only so a clean clone starts with no
+      # configuration at all.
+      #
+      # DO NOT put a real secret in this file. Every ${VAR:-default} below reads
+      # VAR from `.env` in THIS directory (compose does that automatically) or
+      # from your shell, and falls back to the public default only if neither
+      # supplies it. So real secrets go in ./.env, which is gitignored — see
+      # .env.example, and the README's "Credentials" section.
+      #
+      # Note `./.env` is NOT packages/api/.env: that one is read by dotenv when
+      # the API runs on the host, and compose never looks at it.
+      #
+      # ALLOW_DEV_CREDENTIALS is what keeps the public defaults safe: without it
+      # the API refuses to start on any of them, so a deployment cannot inherit
+      # them by forgetting to set something. Once you supply real values, set
+      # ALLOW_DEV_CREDENTIALS=false in ./.env to have this stack enforce that too.
+      ALLOW_DEV_CREDENTIALS: ${ALLOW_DEV_CREDENTIALS:-true}
       JWT_SECRET: ${JWT_SECRET:-dev-only-jwt-secret-change-me-at-least-32-chars}
       JWT_EXPIRES_IN_SECONDS: ${JWT_EXPIRES_IN_SECONDS:-3600}
       SDK_API_KEY: ${SDK_API_KEY:-dev-only-sdk-api-key-change-me}
@@ -64,7 +102,7 @@ services:
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me-please}
     depends_on:
-      migrate:
+      seed:
         condition: service_completed_successfully
       redis:
         condition: service_healthy

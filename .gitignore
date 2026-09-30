@@ -2,8 +2,10 @@ node_modules/
 dist/
 coverage/
 CLAUDE.md
-.env
-.env.local
+# Every env file, however suffixed — .env.production and .env.test are exactly
+# the ones someone creates while deploying. Only the committed template escapes.
+.env*
+!.env.example
 *.log
 .DS_Store
 k6/results/*.json

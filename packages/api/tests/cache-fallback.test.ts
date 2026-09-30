@@ -1,7 +1,7 @@
 import type { FlagConfig } from '@feature-flags/core';
 import type { Redis } from 'ioredis';
 import { describe, expect, it, vi } from 'vitest';
-import { fallbackValue, loadConfig } from '../src/config.js';
+import { devCredentialsInUse, fallbackValue, loadConfig } from '../src/config.js';
 import type { Db } from '../src/db/client.js';
 import { parseUserContext } from '../src/routes/evaluate.js';
 import { CacheUnavailableError, createFlagCache } from '../src/services/cache/flag-cache.js';
@@ -37,6 +37,79 @@ describe('fallback policy', () => {
 
   it('defaults the cache TTL to 30 seconds', () => {
     expect(loadConfig(BASE_ENV as NodeJS.ProcessEnv).FLAG_CACHE_TTL_SECONDS).toBe(30);
+  });
+});
+
+/*
+ * The credentials committed to this repo are public by design, so the only thing
+ * standing between them and a real deployment is this guard. It is a security
+ * control, which means the important tests are the ones proving it FAILS.
+ */
+describe('development credential guard', () => {
+  const DEV = {
+    JWT_SECRET: 'dev-only-jwt-secret-change-me-at-least-32-chars',
+    SDK_API_KEY: 'dev-only-sdk-api-key-change-me',
+    INTEGRATION_API_KEY: 'dev-only-integration-key-change-me',
+  };
+
+  it('refuses to load a config using the public placeholders', () => {
+    expect(() => loadConfig({ ...BASE_ENV, ...DEV } as NodeJS.ProcessEnv)).toThrow(
+      /Refusing to start/,
+    );
+  });
+
+  it.each(Object.keys(DEV))('refuses when only %s is a placeholder', (key) => {
+    const env = { ...BASE_ENV, [key]: DEV[key as keyof typeof DEV] };
+    expect(() => loadConfig(env as NodeJS.ProcessEnv)).toThrow(new RegExp(key));
+  });
+
+  it('names every offending variable, so one fix does not hide the others', () => {
+    try {
+      loadConfig({ ...BASE_ENV, ...DEV } as NodeJS.ProcessEnv);
+      throw new Error('expected loadConfig to throw');
+    } catch (err) {
+      const message = (err as Error).message;
+      for (const key of Object.keys(DEV)) expect(message).toContain(key);
+      // Actionable, not just a refusal.
+      expect(message).toContain('ALLOW_DEV_CREDENTIALS');
+      expect(message).toContain('randomBytes');
+    }
+  });
+
+  it('allows them when a local stack opts in explicitly', () => {
+    const config = loadConfig({
+      ...BASE_ENV,
+      ...DEV,
+      ALLOW_DEV_CREDENTIALS: 'true',
+    } as NodeJS.ProcessEnv);
+    expect(config.JWT_SECRET).toBe(DEV.JWT_SECRET);
+    expect(config.ALLOW_DEV_CREDENTIALS).toBe(true);
+  });
+
+  // Opting in must take exactly the string 'true'. Boolean('false') is true, and
+  // a guard that could be disabled by setting it to 'false' would be worthless.
+  it.each(['false', 'FALSE', '0', 'yes', ''])('does not treat %o as opting in', (value) => {
+    expect(() =>
+      loadConfig({ ...BASE_ENV, ...DEV, ALLOW_DEV_CREDENTIALS: value } as NodeJS.ProcessEnv),
+    ).toThrow();
+  });
+
+  it('defaults to refusing, so the guard is never off by omission', () => {
+    expect(loadConfig(BASE_ENV as NodeJS.ProcessEnv).ALLOW_DEV_CREDENTIALS).toBe(false);
+  });
+
+  it('lets real secrets through with no opt-in at all', () => {
+    const config = loadConfig(BASE_ENV as NodeJS.ProcessEnv);
+    expect(devCredentialsInUse(config)).toEqual([]);
+  });
+
+  it('reports exactly which credentials are placeholders', () => {
+    const config = loadConfig({
+      ...BASE_ENV,
+      JWT_SECRET: DEV.JWT_SECRET,
+      ALLOW_DEV_CREDENTIALS: 'true',
+    } as NodeJS.ProcessEnv);
+    expect(devCredentialsInUse(config)).toEqual(['JWT_SECRET']);
   });
 });
 

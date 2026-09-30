@@ -33,7 +33,7 @@ export const options = {
   },
   thresholds: {
     // NFR-04: the evaluation path never throws because infrastructure is down.
-    http_req_failed: ['rate<0.001'],
+    'http_req_failed{endpoint:evaluate}': ['rate<0.001'],
     checks: ['rate==1.00'],
     wrong_answers: ['count==0'],
     // Deliberately looser than the 5 ms of the clean run: with Redis gone,

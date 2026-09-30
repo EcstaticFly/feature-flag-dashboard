@@ -38,7 +38,7 @@ export const options = {
   },
   thresholds: {
     // NFR-04: never an exception, never a 5xx, however broken the back end is.
-    http_req_failed: ['rate<0.001'],
+    'http_req_failed{endpoint:evaluate}': ['rate<0.001'],
     checks: ['rate==1.00'],
     policy_violations: ['count==0'],
     // The two thresholds the circuit breaker exists to satisfy. Before it, this

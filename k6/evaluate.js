@@ -39,7 +39,7 @@ export const options = {
     // letting the server off: k6 issues requests on a wall-clock schedule
     // regardless of how fast responses come back.
     http_reqs: [`rate>${RATE * 0.98}`],
-    http_req_failed: ['rate<0.001'],
+    'http_req_failed{endpoint:evaluate}': ['rate<0.001'],
     // A 404 on every request would otherwise look wonderfully fast.
     checks: ['rate==1.00'],
   },

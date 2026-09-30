@@ -4,6 +4,55 @@ Ship code dark, roll out by percentage/cohort, roll back instantly. A feature-fl
 service (Express + PostgreSQL + Redis), a TypeScript client SDK, and an admin dashboard
 (Next.js), managed as an npm-workspaces monorepo.
 
+**Full requirements spec:** [../docs/SRS.md](../docs/SRS.md) — it sits in the parent folder,
+alongside this one, so the link resolves in a local checkout rather than on GitHub alone.
+[Requirements coverage](#requirements-coverage) maps every requirement in it to the test that
+proves it.
+
+## Architecture
+
+```
+  ┌─ writes ───────────────────────────┐   ┌─ reads ─────────────────────────┐
+  │                                    │   │                                 │
+  │  Admin dashboard (Next.js)         │   │  Host app                       │
+  │  Server Components + Server        │   │  + @feature-flags/sdk           │
+  │  Actions. The JWT lives in an      │   │  isEnabled() is synchronous,    │
+  │  httpOnly cookie; the browser      │   │  in-process, and never throws   │
+  │  never holds it.                   │   │                                 │
+  │              │ admin JWT           │   │              ▲                  │
+  │                                    │   │              │ GET /api/sdk/    │
+  │  Error tracker (System B —         │   │              │ flags            │
+  │  not built yet)                    │   │              │ x-api-key        │
+  │              │ x-integration-key   │   │              │                  │
+  │              │ (disable only)      │   │              │ every            │
+  └──────────────┼────────────────────-┘   └──────────────┼──────────────────┘
+                 │                                        │ refreshIntervalMs
+                 ▼                                        │
+       ┌──────────────────────────────────────────────────┴─────────┐
+       │              Flag Service API — Express 5                   │
+       │                                                             │
+       │   read    L1 in-process Map ─▶ L2 Redis ─▶ L3 PostgreSQL    │
+       │                                            ▲ circuit        │
+       │                                              breaker        │
+       │   write   ONE transaction: flag row + audit row             │
+       │           → commit → clear L1 + L2 → PUBLISH the key        │
+       └────────┬──────────────────┬───────────────────┬─────────────┘
+                ▼                  ▼                   ▼
+        ┌──────────────┐  ┌──────────────────┐  ┌────────────────────┐
+        │  PostgreSQL  │  │ Redis flag cache │  │ Redis Pub/Sub      │
+        │  flags,      │  │ shared by every  │  │ flags:invalidate — │
+        │  audit_log,  │  │ instance, 30 s   │  │ every other API    │
+        │  users       │  │ TTL              │  │ instance drops its │
+        │  — the truth │  └──────────────────┘  │ L1 within 2 s      │
+        └──────────────┘                        └────────────────────┘
+```
+
+**The SDK never touches Redis.** It downloads whole flag configs from `/api/sdk/flags` on a
+timer and evaluates them in-process with `@feature-flags/core`, so a check costs no network
+at all and a consumer needs no cache credentials. `GET /api/flags/:key/evaluate` exists as a
+server-side path for non-JavaScript clients and the k6 load test; it imports the same
+evaluator, which is why the two can never disagree about a user.
+
 ## Prerequisites
 
 - Node.js ≥ 20 and npm ≥ 10
@@ -11,18 +60,38 @@ service (Express + PostgreSQL + Redis), a TypeScript client SDK, and an admin da
 
 ## Quick start
 
+From a clean clone, the back end needs exactly this:
+
 ```sh
 npm install
-npm run compose:up                # builds images, then postgres + redis → migrate → api
+npm run compose:up                       # postgres + redis → migrate → seed → api
 curl -i http://localhost:4000/health
-
-cp packages/api/.env.example packages/api/.env   # then edit the secrets
-npm run db:seed                                  # creates the single admin account
 ```
 
-`npm run compose:up` is `docker compose up --build -d`. Migrations run via the one-shot
-`migrate` service before `api` starts; re-running is safe, because applied migrations are
-tracked in `drizzle.__drizzle_migrations`.
+You can log in immediately as `admin@example.com` / `change-me-please` — override with
+`ADMIN_EMAIL` and `ADMIN_PASSWORD` before `compose:up`.
+
+`npm run compose:up` is `docker compose up --build -d`. Two one-shot services run to
+completion before `api` starts:
+
+- **`migrate`** applies pending migrations. Re-running is safe; applied migrations are tracked
+  in `drizzle.__drizzle_migrations`.
+- **`seed`** creates the single admin. It *upserts*, so every `up` re-syncs the password to
+  `ADMIN_PASSWORD` — which makes a forgotten password recoverable without SQL, but also means a
+  password changed elsewhere does not survive the next `up`.
+
+The dashboard is **not** in compose — it is a separate Next.js app, two commands:
+
+```sh
+cp packages/dashboard/.env.example packages/dashboard/.env.local
+npm run dev:dashboard                    # http://localhost:3000
+```
+
+It is kept out deliberately: it is deployed to Vercel rather than self-hosted, and a container
+on port 3000 would collide with the server Playwright starts for the E2E suite.
+
+`packages/api/.env` is only needed to run the API **outside** Docker, or to run `npm run db:seed`
+from the host — compose supplies its own environment. See [Environment variables](#environment-variables).
 
 ### After changing code
 
@@ -238,6 +307,71 @@ FLAGS_API_URL=http://localhost:4000 FLAGS_API_KEY=dev-only-sdk-api-key-change-me
 Change the flag's rollout through the API and the printed count follows within
 `REFRESH_MS`, with no restart.
 
+## Testing
+
+Four suites. All four must pass for the project to be considered complete.
+
+| Suite | Command | Needs | What it covers |
+|---|---|---|---|
+| Vitest **unit** | `npm run test:unit` | nothing | Bucketing and rule evaluation, JWT, scrypt, config parsing, the [credential guard](#credentials-and-why-the-placeholders-are-safe), the circuit breaker, SDK behaviour against a stub server |
+| Vitest **integration** | `npm test` | Docker | The same, plus every route against a real Postgres and Redis via Testcontainers — cache tiers, invalidation, audit, durability, degradation |
+| **Playwright** E2E | `npm run test:e2e` | API running, `npx playwright install chromium` | The dashboard's flows end to end, and one real SDK consumer observing a UI change |
+| **k6** load + chaos | `npm run load:test`, `load:chaos`, `load:blackout` | stack running | NFR-FD-01 latency, NFR-FD-03 throughput, NFR-FD-04 degradation under load |
+
+A healthy run:
+
+```
+npm run test:unit    →  api 102, core 54, sdk 69   (225 tests, 15 files)
+npm test             →  api 209, core 54, sdk 69   (332 tests, 24 files)
+npm run test:e2e     →  26 passed
+npm run load:test    →  exit 0, every threshold green
+```
+
+`npm test` is the default gate and needs Docker, because the integration specs start real
+containers — a mocked Postgres would not catch the ambiguous-column and transaction bugs these
+have actually caught. Playwright stays out of `npm test` deliberately, so the default suite needs
+neither a dashboard nor a browser; see [End-to-end tests](#end-to-end-tests). The k6 gates and
+their measured results are in [Performance](#performance).
+
+`npm run test:e2e` builds `core` and `sdk` first, because the consumer spec imports the SDK's
+compiled output — a stale `dist` would otherwise fail in a confusing way.
+
+## Requirements coverage
+
+Every requirement in [../docs/SRS.md](../docs/SRS.md) §3 and §5, what implements it, and the test
+that proves it. This is the table that makes "complete" checkable instead of asserted.
+
+**On the two numbering schemes:** the SRS uses `FR-FD-nn` / `NFR-FD-nn`; the milestone notes in
+`../docs/` use the shorter `FR-nn` / `NFR-nn` from the build plan. They are the same requirements
+— `FR-FD-07` ≡ `FR-07` — with one exception: **`NFR-FD-05` appears only in the SRS**, so no
+milestone claimed it until M8 traced the spec and gave it a test.
+
+| SRS | Requirement | Implemented in | Proved by |
+|---|---|---|---|
+| FR-FD-01 | Admin creates a flag with a unique key | `services/flags/flag-service.ts` `createFlag`, partial unique index on live keys | `flags.integration.test.ts` (duplicate → 409), `durability.integration.test.ts` ("commits exactly one flag and one audit row under two concurrent creates") |
+| FR-FD-02 | A flag can be toggled fully on or off | `enabled` column; `kill_switch` branch in `core/evaluate.ts` | `core/evaluate.test.ts` ("a disabled flag is false even at 100% with a matching allowlist"), `evaluate.integration.test.ts` ("honours the kill switch"), `e2e/flags.spec.ts` ("the list switch is a kill switch that persists") |
+| FR-FD-03 | Percentage rollout, 0–100 | `core/evaluate.ts`; `flags_rollout_percentage_range` check constraint | `core/evaluate.test.ts` ("0% is false for everybody", "100% is true for everybody", "exclusive at the boundary"), `validation.test.ts` |
+| FR-FD-04 | Targeting rules on user attributes, including an allowlist | `core/evaluate.ts` — rule matching, with case- and whitespace-insensitive attribute comparison | `core/evaluate.test.ts` ("a matching rule wins over a 0% rollout"), `core/normalize.test.ts`, `evaluate.integration.test.ts` ("applies an allowlist rule regardless of bucket", "reads attr.* parameters"), `e2e/flags.spec.ts` ("an allowlist rule round-trips through the builder") |
+| FR-FD-05 | Deterministic bucketing, `hash(userId + flagKey) % 100` | `core/hash.ts` — FNV-1a plus a MurmurHash3 finalizer; frozen | `core/bucket.test.ts` ("is deterministic across 1,000 calls"), `core/golden.test.ts`, `sdk` ("uses the same hash, so a bucket is the same in both places") |
+| FR-FD-06 | Audit entry per change: actor, timestamp, old and new value | `writeAudit`, inside each mutation's transaction | `audit.integration.test.ts` ("carries the before and after values of each change"), `durability.integration.test.ts` ("commits the audit row in the same transaction as the flag itself") |
+| FR-FD-07 | SDK exposes `isEnabled(flagKey, userContext): boolean` | `packages/sdk/src/client.ts` | `sdk` ("is synchronous — it returns a boolean, not a promise", "returns the default before init() instead of throwing") |
+| FR-FD-08 | Resolved from cache, with no network round trip per check | SDK in-memory snapshot; API's L1 → L2 → L3 tiers | `sdk` ("makes zero HTTP requests across 10,000 checks"), `cache.integration.test.ts` ("serves the next read from the in-process tier, without touching Postgres") |
+| FR-FD-09 | Changes reach every SDK instance inside the NFR-FD-02 window | SDK refresh timer; Redis Pub/Sub `flags:invalidate` | `sdk` ("picks up a change made on the server (FR-09)"), **`e2e/consumer.spec.ts`** — the full chain, UI → API → a real SDK client |
+| FR-FD-10 | Authentication required before a flag can be seen or changed | `middleware/auth.ts` `requireAdmin`; dashboard `proxy.ts` | `auth-middleware.test.ts`, `flags.integration.test.ts`, `e2e/auth.spec.ts` ("redirects an unauthenticated visitor to login, with no flash of the flag list") |
+| FR-FD-11 | `POST /api/integrations/alert` disables a flag on an external signal | `integrations/alert.ts` | `integrations.integration.test.ts`, `e2e/integration-alert.spec.ts` |
+| FR-FD-12 | Integration-created audit entries are tagged system-initiated | `SYSTEM_INTEGRATION_ACTOR` in `db/schema.ts` | `integrations.integration.test.ts`, `audit.integration.test.ts` ("labels a system-initiated change rather than showing a raw sentinel") |
+| NFR-FD-01 | Evaluation latency from cache — **P99 < 5 ms** | Three-tier cache; `Server-Timing` on the route | `k6/evaluate.js` threshold `server_ms: p(99)<5`. **Observed 0.26–0.41 ms** — see [Performance](#performance) |
+| NFR-FD-02 | Change propagation — **≤ 2 s** | `flags:invalidate` Pub/Sub, with a TTL as the safety net | `cache.integration.test.ts` ("drops a second instance’s in-process copy within 2s of a mutation", "refreshes a stale local copy even when the invalidation never arrives") |
+| NFR-FD-03 | Throughput, single instance — **≥ 500 req/s** | — | `k6/evaluate.js` threshold on `http_reqs`. **Observed 499.6 req/s over 30,005 requests** |
+| NFR-FD-04 | Configurable fail-open / fail-closed; never an unhandled crash | `FLAG_FALLBACK_POLICY`, `CacheUnavailableError`, the circuit breaker | `cache-fallback.test.ts`, `cache-chaos.integration.test.ts` ("is still alive and still answering /health"), `k6/chaos.js` (0 wrong answers), `k6/blackout.js` (0 policy violations at 500 req/s) |
+| NFR-FD-05 | Durability — persisted to Postgres before a change is considered committed | One transaction per mutation (flag + audit); cache invalidation strictly **after** commit | **`durability.integration.test.ts`** — reads back through a separate pool that bypasses every cache tier, and compares `xmin` to prove one transaction wrote both rows |
+| FR-INT-03 | System A disables the referenced flag on a qualifying alert | `integrations/alert.ts` → `updateFlag` | `integrations.integration.test.ts`, `e2e/integration-alert.spec.ts` |
+| FR-INT-05 | Every auto-disable appears in the audit log, system-tagged | Same path; audit written in the same transaction | `integrations.integration.test.ts` ("writes exactly one audit entry when the same alert arrives twice") |
+
+**`FR-INT-01`, `FR-INT-02` and `FR-INT-04` are System B's responsibility** — tagging an issue with
+a flag key, deciding a threshold was crossed, and retrying with backoff. This side implements the
+endpoint they call and is deliberately unaware of them; nothing calls it yet.
+
 ## Design decisions
 
 - **Fail-closed** when no flag source is reachable (see below) — an outage must never switch
@@ -251,6 +385,22 @@ Change the flag's rollout through the API and the printed count follows within
 - **Soft delete** keeps audit rows valid; a partial unique index lets a deleted key be reused.
 - **v1 omissions:** login rate limiting, refresh tokens, negative caching, single-flight on a
   simultaneous cache expiry (thundering herd), and a browser SDK build.
+
+### Deviations from the SRS
+
+Where this repo departs from [../docs/SRS.md](../docs/SRS.md), and why:
+
+| Deviation | Why |
+|---|---|
+| The evaluator lives in **`packages/core`**, not `packages/api/src/services/targeting/` (§3.7) | The API and the SDK must evaluate identically, and the SDK evaluates locally. A separate package with **zero runtime dependencies** is the only way it can bundle the evaluator without dragging Express into a consumer's app |
+| The **SDK does not read Redis directly**, as the §3.3 diagram shows it doing | It fetches whole configs from `/api/sdk/flags` and evaluates in-process, so a check costs no network at all and a consumer needs no cache credentials. The trade-off is a refresh-interval delay instead of instant propagation, which NFR-FD-02's 2 s window accommodates |
+| Playwright lives in `packages/dashboard/**e2e**/`, not `tests/` (§3.7) | Keeps it outside the Vitest glob, so `npm test` needs no browser |
+| **`CLAUDE.md` is gitignored** though §3.7 lists it at the root | It is agent instructions, not product documentation; everything a human needs is in this file |
+| Extra top-level directories not in §3.7: `packages/core/`, `k6/`, `examples/victim-app/` | Consequences of the two decisions above, plus the load suite and a runnable SDK demo |
+| The **dashboard is not in `docker-compose`** | It is deployed separately (Vercel), and a container on port 3000 would collide with Playwright's own server. Compose covers the back end, which is what needs orchestrating |
+| **No multi-tenancy, projects or user management** | Out of scope by design: one seeded admin, one flag namespace. There is no signup flow |
+| **RabbitMQ is not used**, though it appears in the wider stack | Nothing here is queue-shaped: a flag write is a single transaction that must be immediately readable. It belongs in System B, where fingerprinting and alerting genuinely are |
+| A **circuit breaker** on the Postgres read tier, which the SRS does not mention | Added in M7 after load testing showed a total outage was correct but 6× slower than it needed to be. See [Performance](#performance) |
 
 ## Caching and degradation
 
@@ -378,7 +528,7 @@ reports. Full method, all numbers and the pass/fail criteria per step:
 | `npm run build` | Compile every package to `dist/` |
 | `npm run typecheck` | `tsc --noEmit` across packages |
 | `npm test` | Vitest in every package — **includes Testcontainers integration tests (needs Docker)** |
-| `npm run test:e2e` | Playwright against the dashboard (needs the API running) |
+| `npm run test:e2e` | Playwright against the dashboard; builds `core` + `sdk` first (needs the API running) |
 | `npm run dev:dashboard` | Start the dashboard on :3000 |
 | `npm run test:unit` | Vitest, excluding `*.integration.test.ts` |
 | `npm run db:generate` | Diff `src/db/schema.ts` against `drizzle/` and emit a new SQL migration |
@@ -399,7 +549,7 @@ reports. Full method, all numbers and the pass/fail criteria per step:
 
 ```
 feature-flag-dashboard/
-├── docker-compose.yml           # postgres:16, redis:7, migrate (one-shot), api, k6 (profile: load)
+├── docker-compose.yml           # postgres:16, redis:7, migrate + seed (one-shot), api, k6 (profile: load)
 ├── package.json                 # npm workspaces root
 ├── tsconfig.base.json
 ├── k6/                          # load + chaos tests (evaluate, chaos, blackout, orchestrator)
@@ -449,5 +599,94 @@ both the API and the SDK, and must carry no dependencies into a consumer's app.
 | `INTEGRATION_API_KEY` | — (required) | Key the alert endpoint accepts as `x-integration-key`; at least 16 characters |
 | `FLAG_CACHE_TTL_SECONDS` | `30` | TTL on both cache tiers; the safety net for a missed invalidation |
 | `FLAG_FALLBACK_POLICY` | `fail-closed` | `fail-closed` \| `fail-open` — what an unresolvable flag evaluates to |
+| `ALLOW_DEV_CREDENTIALS` | `false` | Permits the public placeholder credentials below. Set only by `docker-compose.yml`; a real deployment must never set it |
 | `FLAG_EVAL_LOG_SAMPLE_RATE` | `1` | Fraction of evaluations that emit the structured log line (0-1); costs ~0.12 ms at p99 at the default |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | — | Read by `npm run db:seed` only, not by the running API |
+
+### Credentials, and why the placeholders are safe
+
+Four credential values are committed to this repository — in `packages/api/.env.example`,
+`docker-compose.yml`, the k6 scripts and this README:
+
+```
+JWT_SECRET           dev-only-jwt-secret-change-me-at-least-32-chars
+SDK_API_KEY          dev-only-sdk-api-key-change-me
+INTEGRATION_API_KEY  dev-only-integration-key-change-me
+ADMIN_PASSWORD       change-me-please
+```
+
+**They are not secrets and never were.** They exist so that a clean clone runs with no
+configuration at all, which is what makes `docker compose up` a two-command start. But anyone who
+can read this repo can sign an admin token with that JWT secret, so a deployment using it has no
+authentication whatsoever.
+
+So the API and the seed script **refuse to start on any of them** unless
+`ALLOW_DEV_CREDENTIALS=true` is set:
+
+```
+Refusing to start: JWT_SECRET, SDK_API_KEY, INTEGRATION_API_KEY are still set to this
+repository's development placeholder, which is public.
+Generate real values with:
+  node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
+Set ALLOW_DEV_CREDENTIALS=true only for a throwaway local stack.
+```
+
+`docker-compose.yml` sets it, because that stack is throwaway by design. **Nothing else should.**
+A deployment that forgets to supply a real secret therefore fails loudly at boot instead of
+starting up unauthenticated — the failure mode you want, rather than the silent one.
+
+Opting in requires the exact string `true`: `ALLOW_DEV_CREDENTIALS=false` or `0` still refuses, so
+the guard cannot be disabled by accident. It is covered by
+[`cache-fallback.test.ts`](packages/api/tests/cache-fallback.test.ts), whose tests are mostly
+about proving the guard *fails* correctly.
+
+### Running the Docker stack on real secrets
+
+**You never edit `docker-compose.yml` to set a secret.** Every value in it is written as
+`${VAR:-public-default}`, and Compose reads `VAR` from a **`.env` file in the same directory as
+`docker-compose.yml`** — automatically, with no flag — or from your shell, falling back to the
+public default only when neither supplies it.
+
+```sh
+cp .env.example .env         # in feature-flag-dashboard/, next to docker-compose.yml
+# fill in JWT_SECRET, SDK_API_KEY, INTEGRATION_API_KEY, ADMIN_PASSWORD
+# and set ALLOW_DEV_CREDENTIALS=false
+npm run compose:up
+```
+
+`.env` is gitignored, so the secrets stay out of git while `docker-compose.yml` — which is
+committed — carries no real value at all.
+
+**There are two different `.env` files, and mixing them up is the easy mistake:**
+
+| File | Read by | Used when |
+|---|---|---|
+| **`./.env`** (next to `docker-compose.yml`) | Docker Compose, for `${...}` substitution | The containers — `npm run compose:up` |
+| `packages/api/.env` | `dotenv`, inside the API process | The API running **on the host** — `npm run dev`, `npm run db:seed` |
+
+Compose never reads `packages/api/.env`. Putting your real secrets only there leaves the containers
+on the public defaults, silently. If you run the API both ways, maintain both files.
+
+Two details that make a partly-filled `.env` safe rather than surprising:
+
+- An **empty** value (`JWT_SECRET=`) counts as unset and falls back to the default, because the
+  substitutions use `${VAR:-default}` and not `${VAR-default}`. So a half-completed `.env` still
+  boots.
+- Which is exactly why **`ALLOW_DEV_CREDENTIALS=false` is worth setting** once your values are
+  real: it turns "I filled in two of the three secrets" from a silent fallback into a refusal that
+  names the one you missed.
+
+To confirm what the containers will actually receive:
+
+```sh
+docker compose config | grep -E "JWT_SECRET|SDK_API_KEY|INTEGRATION_API_KEY"
+```
+
+That prints the **resolved** values, so don't paste its output anywhere — which is also the quickest
+way to prove your `.env` is being picked up.
+
+**No real secret is tracked in this repository, and none ever has been.** Every env file is
+gitignored via `.env*` with `!.env.example`, which covers the variants a deployment tends to
+create (`.env.production`, `.env.test`, `.env.production.local`); Playwright's `test-results/`
+(traces can contain a live session token) and `k6/results/*.json` are ignored too; and nothing
+logs a credential at startup or on any request path.
