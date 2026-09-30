@@ -588,7 +588,10 @@ Set up: create a flag `new-checkout-flow`, and run the consumer somewhere visibl
 ideally on a second machine, which is what makes the propagation real rather than a claim:
 
 ```sh
-mkdir flagpilot-demo && cd flagpilot-demo && npm init -y && npm install flagpilot express
+# Outside this repository, so it exercises the published package, not the workspace link.
+mkdir flagpilot-demo && cd flagpilot-demo && npm init -y
+npm pkg set type=module          # the app is ESM; `npm init -y` writes a CommonJS manifest
+npm install flagpilot express
 # copy examples/victim-app/index.js here, then:
 FLAGS_API_URL=https://<your-api>.onrender.com FLAGS_API_KEY=<your SDK_API_KEY>   FLAG_KEY=new-checkout-flow REFRESH_MS=5000 node index.js
 ```
@@ -625,9 +628,15 @@ curl -H "x-api-key: $SDK_API_KEY" "https://<your-api>/api/flags/new-checkout-flo
 # still answers, served from Postgres. The victim app keeps working throughout
 ```
 
-Locally the same step is `docker compose stop redis`, then `docker compose start redis` to recover.
+**Do step 9 locally, not against the deployment.** A managed Redis cannot be stopped: breaking
+Upstash means repointing `REDIS_URL` and redeploying, or deleting the database. Run
+`docker compose stop redis` on your own machine, show the same two curls against
+`localhost:4000`, then `docker compose start redis` to recover. It is the same code, and the
+[Performance](#performance) numbers measure it at 500 req/s — attempting to break production live is
+the one step in this sequence likely to go wrong in front of an audience.
+
 With *both* tiers down, evaluation returns `200 {"enabled":false,"reason":"unavailable"}` — the
-documented fail-closed policy, measured at 500 req/s in [Performance](#performance).
+documented fail-closed policy.
 
 ## Scripts (repo root)
 
