@@ -1,0 +1,8 @@
+# Shell scripts must keep LF endings. core.autocrlf is commonly true on Windows,
+# and a CRLF script copied into a Linux image fails on its shebang with errors
+# that name the file rather than the cause.
+*.sh text eol=lf
+# Same reasoning for the Dockerfile and anything else read by a Linux shell.
+Dockerfile text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf

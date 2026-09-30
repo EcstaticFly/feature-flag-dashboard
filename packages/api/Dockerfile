@@ -25,6 +25,9 @@ COPY --from=build /repo/packages/core/dist packages/core/dist
 COPY --from=build /repo/packages/api/dist packages/api/dist
 # The migrator reads SQL files from here at runtime.
 COPY packages/api/drizzle packages/api/drizzle
+# Start-up script for a standalone deployment: migrate, seed, then serve.
+# docker-compose does not use it — it runs those as separate one-shot services.
+COPY packages/api/docker-start.sh packages/api/docker-start.sh
 WORKDIR /repo/packages/api
 USER node
 EXPOSE 4000

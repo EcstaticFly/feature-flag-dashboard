@@ -38,7 +38,13 @@ services:
     #
     # On a paid plan, delete this and use instead:
     #   preDeployCommand: node dist/db/migrate.js && node dist/db/seed.js
-    dockerCommand: sh -c "node dist/db/migrate.js && node dist/db/seed.js && node dist/index.js"
+    #
+    # Two tokens, no quotes, no &&. An earlier version chained the commands here
+    # with `sh -c "a && b && c"`; YAML keeps those inner quotes as part of the
+    # value, and Render's argv handling then passed the whole string to sh as a
+    # single command name — "not found", exit 127, before anything ran. A script
+    # file cannot be misparsed however the platform splits the command.
+    dockerCommand: sh /repo/packages/api/docker-start.sh
 
     # Liveness, NOT /health. Render polls this every ~30s and that cannot be
     # turned off; /health queries Postgres and pings Redis, so pointing Render at
