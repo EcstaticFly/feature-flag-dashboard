@@ -40,6 +40,31 @@ describe('fallback policy', () => {
   });
 });
 
+describe('evaluation log sampling', () => {
+  // The default must log every evaluation, exactly as before M7 added the dial.
+  it('defaults to logging every evaluation', () => {
+    expect(loadConfig(BASE_ENV as NodeJS.ProcessEnv).FLAG_EVAL_LOG_SAMPLE_RATE).toBe(1);
+  });
+
+  it.each(['0', '0.01', '1'])('accepts a rate of %s', (rate) => {
+    expect(
+      loadConfig({ ...BASE_ENV, FLAG_EVAL_LOG_SAMPLE_RATE: rate } as NodeJS.ProcessEnv)
+        .FLAG_EVAL_LOG_SAMPLE_RATE,
+    ).toBe(Number(rate));
+  });
+
+  it.each(['-0.1', '1.5', 'often'])('rejects %s rather than guessing', (rate) => {
+    expect(() =>
+      loadConfig({ ...BASE_ENV, FLAG_EVAL_LOG_SAMPLE_RATE: rate } as NodeJS.ProcessEnv),
+    ).toThrow(/FLAG_EVAL_LOG_SAMPLE_RATE/);
+  });
+
+  // `Math.random()` is never >= 1, so the default samples nothing out.
+  it('never filters at the default rate', () => {
+    for (let i = 0; i < 1000; i += 1) expect(Math.random() >= 1).toBe(false);
+  });
+});
+
 describe('parseUserContext', () => {
   it('reads userId and attr.* parameters', () => {
     expect(parseUserContext({ userId: 'u_1', 'attr.plan': 'pro', 'attr.email': 'a@b.com' })).toEqual(
@@ -131,6 +156,60 @@ describe('flag cache with Redis unreachable', () => {
 
     await expect(cache.getAll()).rejects.toBeInstanceOf(CacheUnavailableError);
     await expect(cache.getFlag('demo')).rejects.toBeInstanceOf(CacheUnavailableError);
+  });
+
+  // M7's blackout load test found this: with no tier reachable, every request
+  // waited out the pg connect timeout before the fail-closed answer could be
+  // produced. Waiting cannot change the answer, so after a few failures the
+  // cache must stop asking.
+  it('stops touching the database once the circuit opens, and reopens it on recovery', async () => {
+    let healthy = false;
+    let queries = 0;
+    const answer = () => {
+      queries += 1;
+      return healthy ? Promise.resolve([]) : Promise.reject(new Error('db down'));
+    };
+    const db = {
+      select: () => ({
+        from: () => ({ where: () => ({ limit: answer, orderBy: answer }) }),
+      }),
+    } as unknown as Db;
+
+    let clockMs = 0;
+    const redis = deadRedis();
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const cache = createFlagCache({
+      redis,
+      subscriber: redis,
+      db,
+      ttlSeconds: 30,
+      circuit: { failureThreshold: 3, cooldownMs: 1000, now: () => clockMs },
+    });
+
+    for (let i = 0; i < 3; i += 1) {
+      await expect(cache.getFlag('demo')).rejects.toBeInstanceOf(CacheUnavailableError);
+    }
+    expect(queries).toBe(3);
+    expect(cache.stats().dbCircuit).toBe('open');
+
+    // The next twenty callers still get the documented error — the route turns
+    // that into the fail-closed answer — but pay no database timeout for it.
+    for (let i = 0; i < 20; i += 1) {
+      await expect(cache.getFlag('demo')).rejects.toBeInstanceOf(CacheUnavailableError);
+    }
+    expect(queries).toBe(3);
+    expect(cache.stats().dbShortCircuited).toBe(20);
+
+    // Recovery must be automatic: nothing restarts the API when Postgres returns.
+    healthy = true;
+    clockMs += 1000;
+    await expect(cache.getFlag('demo')).resolves.toBeUndefined();
+    expect(queries).toBe(4);
+    expect(cache.stats().dbCircuit).toBe('closed');
+
+    spy.mockRestore();
+    logSpy.mockRestore();
   });
 
   it('serves a stale snapshot rather than failing when the database dies later', async () => {

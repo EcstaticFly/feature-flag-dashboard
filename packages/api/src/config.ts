@@ -19,6 +19,15 @@ const envSchema = z.object({
   // fail-closed: false, so users keep the behaviour the app had before the flag
   // existed. See README "Caching and degradation".
   FLAG_FALLBACK_POLICY: z.enum(['fail-closed', 'fail-open']).default('fail-closed'),
+  /**
+   * Fraction of evaluations that emit the structured log line, 0–1.
+   *
+   * Defaults to 1 — every evaluation, exactly as before. At NFR-03 throughput
+   * that is 500 JSON serialisations and stdout writes per second, so this dial
+   * exists to turn it down without a code change. See the Performance section
+   * of the README for what it actually costs.
+   */
+  FLAG_EVAL_LOG_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(1),
 });
 
 export type Config = z.infer<typeof envSchema>;

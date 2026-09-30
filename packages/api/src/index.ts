@@ -26,6 +26,7 @@ const app = createApp({
   flags,
   cache,
   fallback: fallbackValue(config.FLAG_FALLBACK_POLICY),
+  evalLogSampleRate: config.FLAG_EVAL_LOG_SAMPLE_RATE,
   auth: {
     jwtSecret: config.JWT_SECRET,
     jwtExpiresInSeconds: config.JWT_EXPIRES_IN_SECONDS,

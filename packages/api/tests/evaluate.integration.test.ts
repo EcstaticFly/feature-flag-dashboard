@@ -81,6 +81,18 @@ describe('evaluation', () => {
     expect(['rollout_in', 'rollout_out']).toContain(res.body.reason);
   });
 
+  // The load test asserts its P99, so the header has to actually be there and
+  // be parseable — a silent rename would make the whole M7 gate meaningless.
+  it('reports its own handler time as Server-Timing', async () => {
+    const res = await evaluate('?userId=user_1');
+
+    const header = res.headers['server-timing'];
+    expect(header).toMatch(/^app;dur=[\d.]+$/);
+    const ms = Number(/dur=([\d.]+)/.exec(header!)![1]);
+    expect(ms).toBeGreaterThanOrEqual(0);
+    expect(ms).toBeLessThan(1000);
+  });
+
   it('is deterministic across repeated calls', async () => {
     const first = (await evaluate('?userId=user_9')).body;
     for (let i = 0; i < 5; i += 1) {

@@ -1,5 +1,5 @@
 import { evaluateFlagDetailed, type UserContext } from '@feature-flags/core';
-import { Router, type Request } from 'express';
+import { Router, type Request, type RequestHandler, type Response } from 'express';
 import { requireSdkOrAdmin, type AuthConfig } from '../middleware/auth.js';
 import { AppError } from '../middleware/errors.js';
 import { CacheUnavailableError, type FlagCache } from '../services/cache/flag-cache.js';
@@ -46,21 +46,53 @@ export function parseUserContext(query: Request['query']): UserContext | undefin
  * Analytics service will (see the Future-Scope note in CLAUDE.md), and emitting
  * it now means the hot path never has to be touched again for it.
  *
- * At NFR-03 throughput this is a lot of stdout — sampling, or batching through
- * a queue, is the obvious next step when analytics actually lands.
+ * `sampleRate` is the dial for NFR-03 throughput: at 1 (the default) every
+ * evaluation is logged, exactly as before — `Math.random()` is never >= 1. The
+ * README's Performance section records what the line actually costs.
  */
-function logEvaluation(entry: Record<string, unknown>): void {
+function logEvaluation(sampleRate: number, entry: Record<string, unknown>): void {
+  if (Math.random() >= sampleRate) return;
   console.log(JSON.stringify({ event: 'flag_evaluation', ts: new Date().toISOString(), ...entry }));
+}
+
+/**
+ * Reports how long the handler itself took, as `Server-Timing: app;dur=<ms>`.
+ *
+ * This is the number NFR-01 is about — evaluation served from cache — as
+ * distinct from the round trip a client sees, which also carries the network.
+ * The load test asserts its P99 and reports both.
+ *
+ * It wraps `res.json` rather than setting the header inline because the route
+ * has two response paths, and headers must be written before the body, so
+ * `res.on('finish')` would be too late.
+ */
+function serverTiming(): RequestHandler {
+  return (_req, res: Response, next) => {
+    const started = performance.now();
+    const json = res.json.bind(res);
+    res.json = (body: unknown) => {
+      res.setHeader('Server-Timing', `app;dur=${(performance.now() - started).toFixed(3)}`);
+      return json(body);
+    };
+    next();
+  };
+}
+
+export interface EvaluateOptions {
+  /** What evaluation returns when no flag source is reachable (NFR-04). */
+  fallback: boolean;
+  /** Fraction of evaluations that emit the structured log line. */
+  evalLogSampleRate: number;
 }
 
 export function createEvaluateRouter(
   cache: FlagCache,
   config: AuthConfig,
-  fallback: boolean,
+  { fallback, evalLogSampleRate }: EvaluateOptions,
 ): Router {
   const router = Router();
 
-  router.get('/:key/evaluate', requireSdkOrAdmin(config), async (req, res) => {
+  router.get('/:key/evaluate', serverTiming(), requireSdkOrAdmin(config), async (req, res) => {
     const parsedKey = flagKeySchema.safeParse(req.params.key);
     if (!parsedKey.success) {
       throw AppError.badRequest('invalid_flag_key', 'flag key is not a valid slug');
@@ -77,7 +109,12 @@ export function createEvaluateRouter(
       // It returns the documented fallback (fail-closed by default), so callers
       // get the behaviour their app had before the flag existed.
       console.error(`[evaluate] no source reachable for '${key}', using fallback`, err.message);
-      logEvaluation({ flagKey: key, userId: context?.userId, enabled: fallback, reason: 'unavailable' });
+      logEvaluation(evalLogSampleRate, {
+        flagKey: key,
+        userId: context?.userId,
+        enabled: fallback,
+        reason: 'unavailable',
+      });
       res.json({ key, userId: context?.userId, enabled: fallback, reason: 'unavailable' });
       return;
     }
@@ -85,7 +122,7 @@ export function createEvaluateRouter(
     if (!config) throw AppError.notFound('flag_not_found', `no flag with key '${key}'`);
 
     const result = evaluateFlagDetailed(config, context);
-    logEvaluation({
+    logEvaluation(evalLogSampleRate, {
       flagKey: key,
       userId: context?.userId,
       enabled: result.enabled,

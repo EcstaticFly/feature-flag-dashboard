@@ -23,6 +23,9 @@
     "db:migrate": "npm run db:migrate -w packages/api",
     "db:seed": "npm run db:seed -w packages/api",
     "compose:up": "docker compose up --build -d",
+    "load:test": "docker compose --profile load run --rm --no-deps k6 run /scripts/evaluate.js",
+    "load:chaos": "node k6/run-chaos.mjs",
+    "load:blackout": "node k6/run-chaos.mjs blackout",
     "compose:down": "docker compose down"
   }
 }

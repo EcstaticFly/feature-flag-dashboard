@@ -40,9 +40,20 @@ To confirm which build is actually running, grep the compiled output inside the 
 docker compose exec -T api grep -c "some string from your change" dist/<path>.js
 ```
 
-A `0` means the image is stale — rebuild. (For iterating quickly, prefer `npm run dev`
-below: `tsx watch` picks up source changes immediately. Use the container to verify the
-real artifact.)
+A `0` means the image is stale. If a rebuild does not clear it, force the container onto the
+new image:
+
+```sh
+docker compose up -d --force-recreate api
+```
+
+This is worth doing before any load or chaos run. During M7, `npm run compose:up` rebuilt the
+image but left the container on the previous one, and the blackout test then reported the
+*unfixed* numbers against what looked like a fixed build — a chaos test cannot tell you it is
+measuring the wrong artifact.
+
+(For iterating quickly, prefer `npm run dev` below: `tsx watch` picks up source changes
+immediately. Use the container to verify the real artifact.)
 
 ### Running the API outside Docker
 
@@ -268,6 +279,15 @@ deleted.
 What survives a Redis outage: evaluation (served from Postgres), the SDK flag list, and
 mutations. `/health` reports 503 naming Redis, and the API process stays up.
 
+**A circuit breaker guards the Postgres read tier.** After 5 consecutive database failures,
+flag reads stop attempting Postgres and fail fast for 1 s, then let exactly one request through
+as a probe. Without it, a *total* outage was still correct — 200, `enabled: false`,
+`reason: "unavailable"` — but every request first waited out the pool's 1.5 s connect timeout,
+which capped a single instance at 238 req/s while it was down. With it, the same outage answers
+in ~1 ms at the full 500 req/s. Writes are not affected: an admin save still attempts the
+database and still reports a real error, because a failed save must be visible. See
+[docs/milestone-7-load-and-chaos.md](../docs/milestone-7-load-and-chaos.md).
+
 *Known simplification:* when the cached snapshot expires simultaneously on several instances
 they all reload from Postgres (a thundering herd). Acceptable at this scale; single-flight is
 the fix.
@@ -304,6 +324,52 @@ never committed without its audit entry. A PATCH that changes nothing writes no 
 Deletes are soft (`deleted_at`), so audit rows keep pointing at a real flag; the key
 itself becomes reusable, because the unique index only covers live flags.
 
+## Performance
+
+Measured with k6, 500 req/s for 60 s, single API instance, Docker Desktop on a laptop. k6 runs
+**inside the compose network** so the numbers exclude Docker's host port proxy, which on Windows
+loopback adds 1-3 ms and would dominate a 5 ms budget.
+
+The gate is on server-side handler time, which the route reports as `Server-Timing: app;dur=<ms>`;
+the round-trip figure is given beside it rather than gated, because it includes the network.
+
+| | Observed | Target |
+|---|---|---|
+| Throughput | **498.8 req/s** sustained, 30,005 requests | 500 req/s (NFR-03) |
+| **Evaluation p99, server-side** | **0.40 ms** | < 5 ms (NFR-01) |
+| Evaluation p95, server-side | 0.26 ms | |
+| Round trip p95 / p99 | 1.51 ms / 3.14 ms | |
+| Errors | 0.000% | |
+
+**12x under the latency budget**, because an L1 hit is a `Map` lookup plus two `Math.imul`
+chains. `FLAG_EVAL_LOG_SAMPLE_RATE` was measured rather than assumed: logging *every* evaluation
+costs about **0.12 ms at p99** (0.40 ms vs 0.28 ms at 1% sampling), so the default stays at 1 —
+a full evaluation log is worth 2.4% of the budget.
+
+**Redis killed mid-run** (down for 25 s of a 60 s run at 500 req/s): 0 failed requests, p99
+0.32 ms, and a correctness counter comparing a pinned user's answer against its pre-outage value
+stayed at **0 wrong answers** across 30,005 requests. The in-process tier absorbed the outage
+almost entirely.
+
+**Redis and Postgres both killed**, requesting keys no tier had ever cached, so every request took
+the fallback: still 500.1 req/s, still 0 failed, p99 **1.07 ms**, and every response was
+`200 {"enabled":false,"reason":"unavailable"}` — 10,001 responses, zero policy violations. This is
+the run that produced the circuit breaker described above; before it, the same test answered
+correctly but at 238 req/s with a p99 of 1503 ms.
+
+Reproduce any of it:
+
+```sh
+npm run compose:up
+npm run load:test        # the NFR gate
+npm run load:chaos       # the same load, Redis killed mid-run
+npm run load:blackout    # the same load, nothing reachable at all
+```
+
+Each run exits non-zero if a threshold is crossed, so these are pass/fail gates rather than
+reports. Full method, all numbers and the pass/fail criteria per step:
+[docs/milestone-7-load-and-chaos.md](../docs/milestone-7-load-and-chaos.md).
+
 ## Scripts (repo root)
 
 | Script | What it does |
@@ -319,6 +385,9 @@ itself becomes reusable, because the unique index only covers live flags.
 | `npm run db:migrate` | Apply pending migrations to `DATABASE_URL` |
 | `npm run db:seed` | Create/update the single admin from `ADMIN_EMAIL` + `ADMIN_PASSWORD` |
 | `npm run compose:up` / `compose:down` | Wrapper around `docker compose` |
+| `npm run load:test` | k6 load test against the evaluate endpoint — the NFR-01/NFR-03 gate |
+| `npm run load:chaos` | The same load with Redis stopped mid-run |
+| `npm run load:blackout` | The same load with Redis *and* Postgres stopped — exercises the fallback policy |
 
 ### Schema change workflow
 
@@ -330,9 +399,10 @@ itself becomes reusable, because the unique index only covers live flags.
 
 ```
 feature-flag-dashboard/
-├── docker-compose.yml           # postgres:16, redis:7, migrate (one-shot), api
+├── docker-compose.yml           # postgres:16, redis:7, migrate (one-shot), api, k6 (profile: load)
 ├── package.json                 # npm workspaces root
 ├── tsconfig.base.json
+├── k6/                          # load + chaos tests (evaluate, chaos, blackout, orchestrator)
 ├── examples/victim-app/         # runnable SDK demo (also the M9 runbook script)
 └── packages/
     ├── core/                    # @feature-flags/core — bucketing + evaluation + types, ZERO runtime deps
@@ -348,7 +418,7 @@ feature-flag-dashboard/
     │   │   ├── middleware/      # auth.ts (two credentials), errors.ts (one envelope)
     │   │   ├── routes/          # health.ts, auth.ts, flags.ts, sdk.ts, evaluate.ts
     │   │   ├── services/flags/  # flag-service.ts — the only place flag SQL lives
-    │   │   ├── services/cache/  # redis.ts (fail-fast client), flag-cache.ts (two tiers)
+    │   │   ├── services/cache/  # redis.ts, flag-cache.ts (two tiers), circuit.ts (breaker on the DB tier)
     │   │   ├── validation/      # zod schemas for flag input
     │   │   ├── integrations/      # alert.ts — POST /api/integrations/alert
     │   └── tests/               # *.test.ts (unit), *.integration.test.ts (Testcontainers)
@@ -379,4 +449,5 @@ both the API and the SDK, and must carry no dependencies into a consumer's app.
 | `INTEGRATION_API_KEY` | — (required) | Key the alert endpoint accepts as `x-integration-key`; at least 16 characters |
 | `FLAG_CACHE_TTL_SECONDS` | `30` | TTL on both cache tiers; the safety net for a missed invalidation |
 | `FLAG_FALLBACK_POLICY` | `fail-closed` | `fail-closed` \| `fail-open` — what an unresolvable flag evaluates to |
+| `FLAG_EVAL_LOG_SAMPLE_RATE` | `1` | Fraction of evaluations that emit the structured log line (0-1); costs ~0.12 ms at p99 at the default |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | — | Read by `npm run db:seed` only, not by the running API |

@@ -59,6 +59,7 @@ services:
       INTEGRATION_API_KEY: ${INTEGRATION_API_KEY:-dev-only-integration-key-change-me}
       FLAG_CACHE_TTL_SECONDS: ${FLAG_CACHE_TTL_SECONDS:-30}
       FLAG_FALLBACK_POLICY: ${FLAG_FALLBACK_POLICY:-fail-closed}
+      FLAG_EVAL_LOG_SAMPLE_RATE: ${FLAG_EVAL_LOG_SAMPLE_RATE:-1}
       # Read only by `node dist/db/seed.js`, not by the running API.
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me-please}
@@ -73,6 +74,26 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+
+  # Load and chaos testing. Not started by a normal `docker compose up` — it
+  # sits behind a profile, and runs on the compose network so measurements do
+  # not include Docker Desktop's host port proxy.
+  k6:
+    image: grafana/k6:latest
+    profiles: ["load"]
+    volumes:
+      - ./k6:/scripts
+    environment:
+      API_URL: http://api:4000
+      SDK_API_KEY: ${SDK_API_KEY:-dev-only-sdk-api-key-change-me}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me-please}
+      LOAD_RATE: ${LOAD_RATE:-500}
+      LOAD_DURATION: ${LOAD_DURATION:-60s}
+      SUMMARY_NAME: ${SUMMARY_NAME:-}
+    depends_on:
+      api:
+        condition: service_healthy
 
 volumes:
   pgdata:

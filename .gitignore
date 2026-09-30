@@ -6,3 +6,4 @@ CLAUDE.md
 .env.local
 *.log
 .DS_Store
+k6/results/*.json

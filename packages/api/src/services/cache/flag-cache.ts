@@ -2,6 +2,12 @@ import type { FlagConfig } from '@feature-flags/core';
 import type { Redis } from 'ioredis';
 import type { Db } from '../../db/client.js';
 import { getFlagConfig, listSdkFlags } from '../flags/flag-service.js';
+import {
+  CircuitOpenError,
+  createCircuitBreaker,
+  type CircuitOptions,
+  type CircuitState,
+} from './circuit.js';
 import { ensureConnected } from './redis.js';
 
 /**
@@ -19,6 +25,11 @@ import { ensureConnected } from './redis.js';
  * Nothing here throws because of Redis. Every Redis call is individually
  * guarded: a failure logs and falls through to the next tier, so a Redis outage
  * degrades latency, not correctness (NFR-04).
+ *
+ * The L3 hop sits behind a circuit breaker (see circuit.ts). When Postgres is
+ * unreachable too, repeatedly waiting out its connect timeout adds latency and
+ * learns nothing, so after a few consecutive failures reads fail fast and the
+ * caller's fallback policy applies immediately.
  */
 
 const ALL_KEY = 'flags:all';
@@ -43,12 +54,17 @@ export interface FlagCacheOptions {
   subscriber: Redis;
   db: Db;
   ttlSeconds: number;
+  /** Overrides for the L3 circuit breaker; tests use these to avoid waiting. */
+  circuit?: CircuitOptions;
 }
 
 export interface CacheStats {
   l1Hits: number;
   l2Hits: number;
   dbLoads: number;
+  /** Reads skipped because the database circuit was open. */
+  dbShortCircuited: number;
+  dbCircuit: CircuitState;
 }
 
 export interface FlagCache {
@@ -78,11 +94,28 @@ export function createFlagCache({
   subscriber,
   db,
   ttlSeconds,
+  circuit: circuitOptions,
 }: FlagCacheOptions): FlagCache {
   const ttlMs = ttlSeconds * 1000;
   let snapshot: Entry<FlagConfig[]> | undefined;
   const flags = new Map<string, Entry<FlagConfig>>();
-  const counters: CacheStats = { l1Hits: 0, l2Hits: 0, dbLoads: 0 };
+  const circuit = createCircuitBreaker(circuitOptions);
+  const counters = { l1Hits: 0, l2Hits: 0, dbLoads: 0, dbShortCircuited: 0 };
+
+  /**
+   * The only path to Postgres from this cache. Counts a short-circuited read
+   * separately from a real load so /health can tell them apart.
+   */
+  async function fromDb<T>(label: string, op: () => Promise<T>): Promise<T> {
+    try {
+      const result = await circuit.run(label, op);
+      counters.dbLoads += 1;
+      return result;
+    } catch (err) {
+      if (err instanceof CircuitOpenError) counters.dbShortCircuited += 1;
+      throw err;
+    }
+  }
 
   /**
    * Runs a Redis command, swallowing any failure — the next tier covers it.
@@ -128,8 +161,7 @@ export function createFlagCache({
     }
 
     try {
-      const configs = await listSdkFlags(db);
-      counters.dbLoads += 1;
+      const configs = await fromDb('flags:all', () => listSdkFlags(db));
       snapshot = { value: configs, expiresAt: Date.now() + ttlMs };
       await tryRedis(redis, 'SETEX flags:all', () =>
         redis.setex(ALL_KEY, ttlSeconds, JSON.stringify(configs)),
@@ -168,8 +200,7 @@ export function createFlagCache({
     }
 
     try {
-      const config = await getFlagConfig(db, key);
-      counters.dbLoads += 1;
+      const config = await fromDb(FLAG_KEY_PREFIX + key, () => getFlagConfig(db, key));
       // A missing flag is not cached. Negative caching would need invalidation
       // on create, so v1 accepts a DB hit per lookup of a non-existent key.
       if (!config) return undefined;
@@ -215,7 +246,14 @@ export function createFlagCache({
     dropLocal();
   }
 
-  return { getAll, getFlag, invalidate, start, close, stats: () => ({ ...counters }) };
+  return {
+    getAll,
+    getFlag,
+    invalidate,
+    start,
+    close,
+    stats: () => ({ ...counters, dbCircuit: circuit.state() }),
+  };
 }
 
 // Known simplification: when flags:all expires at the same moment on N

@@ -21,6 +21,8 @@ export interface AppDeps {
   cache: FlagCache;
   /** What evaluation returns when no flag source is reachable (NFR-04). */
   fallback: boolean;
+  /** Fraction of evaluations that emit the structured log line. Default 1. */
+  evalLogSampleRate?: number;
   health?: HealthRouterOptions;
 }
 
@@ -35,6 +37,7 @@ export function createApp({
   flags,
   cache,
   fallback,
+  evalLogSampleRate = 1,
   health,
 }: AppDeps): Express {
   const app = express();
@@ -46,7 +49,7 @@ export function createApp({
   // Mounted before the CRUD router, which requires an admin token for its whole
   // surface. This one handles only GET /:key/evaluate (SDK key or admin);
   // every other path under /api/flags falls through to the router below.
-  app.use('/api/flags', createEvaluateRouter(cache, auth, fallback));
+  app.use('/api/flags', createEvaluateRouter(cache, auth, { fallback, evalLogSampleRate }));
   app.use('/api/flags', createFlagsRouter(flags, auth));
   app.use('/api/sdk', createSdkRouter(cache, auth));
   app.use('/api/integrations', createIntegrationsRouter(flags, auth));
