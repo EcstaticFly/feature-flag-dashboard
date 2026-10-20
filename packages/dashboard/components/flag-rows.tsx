@@ -1,6 +1,6 @@
 'use client';
 
-import { ChevronRight, Target } from 'lucide-react';
+import { ChevronRight, Globe, Target } from 'lucide-react';
 import Link from 'next/link';
 import { useEffect, useState, useTransition } from 'react';
 import { toggleFlagAction } from '@/app/actions/flags';
@@ -85,6 +85,12 @@ function FlagRow({ flag, onError }: { flag: Flag; onError: (message: string | nu
             <Badge tone="brand" title={`${rules} targeting rule${rules === 1 ? '' : 's'}`}>
               <Target className="h-3 w-3" />
               {rules}
+            </Badge>
+          )}
+          {flag.clientSide && (
+            <Badge tone="neutral" title="Available to browser SDKs">
+              <Globe className="h-3 w-3" />
+              Browser
             </Badge>
           )}
         </div>

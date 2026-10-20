@@ -230,3 +230,54 @@ describe('evaluateFlag', () => {
     }
   });
 });
+
+/*
+ * Attribute lookups must not reach Object.prototype. Contexts used to come only
+ * from trusted servers; the browser endpoint turns them into public input, so
+ * an inherited member must never be mistaken for a user-supplied attribute.
+ */
+describe('attribute lookup is own-property only', () => {
+  const ruleOn = (attribute: string, value: string): TargetingRule => ({
+    attribute,
+    operator: 'eq',
+    values: [value],
+  });
+
+  it.each(['constructor', 'toString', 'hasOwnProperty', 'valueOf', '__proto__'])(
+    'a rule on %s does not match a user who never supplied it',
+    (attribute) => {
+      // The value a naive lookup would produce once stringified and normalised.
+      const inherited = String((Object.prototype as Record<string, unknown>)[attribute])
+        .trim()
+        .toLowerCase();
+      const f = flag({ rolloutPercentage: 0, targetingRules: [ruleOn(attribute, inherited)] });
+
+      const result = evaluateFlagDetailed(f, { userId: 'u1', attributes: { plan: 'pro' } });
+      expect(result.reason).toBe('rollout_out');
+      expect(result.enabled).toBe(false);
+    },
+  );
+
+  it('still matches an attribute the user genuinely supplied with such a name', () => {
+    const f = flag({ targetingRules: [ruleOn('constructor', 'builder')] });
+    const context = { userId: 'u1', attributes: { constructor: 'builder' } as Record<string, string> };
+    expect(evaluateFlagDetailed(f, context).reason).toBe('rule_match');
+  });
+
+  it('treats a non-primitive attribute value as absent rather than "[object object]"', () => {
+    const f = flag({ targetingRules: [ruleOn('plan', '[object object]')] });
+    const context = { userId: 'u1', attributes: { plan: {} } } as never;
+    expect(evaluateFlagDetailed(f, context).reason).toBe('rollout_out');
+  });
+
+  it('ignores clientSide entirely — it is metadata, not an evaluation input', () => {
+    for (const clientSide of [true, false, undefined]) {
+      const f = flag({ rolloutPercentage: 50, clientSide });
+      for (const id of users(50)) {
+        expect(evaluateFlag(f, { userId: id })).toBe(
+          evaluateFlag(flag({ rolloutPercentage: 50 }), { userId: id }),
+        );
+      }
+    }
+  });
+});

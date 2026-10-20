@@ -76,6 +76,18 @@ services:
       - key: ADMIN_PASSWORD
         sync: false
 
+      # ---- browser SDKs (flagpilot/browser, flagpilot/react) ----------------
+      # Leave CLIENT_API_KEY blank and the browser endpoint stays off (404).
+      # The key is public by design — it ships in your pages — but generate a
+      # fresh one with the command above anyway; it must not equal any secret.
+      - key: CLIENT_API_KEY
+        sync: false
+      # Exact origins of the sites that use it, comma-separated, e.g.
+      # https://chatzy.example.com,https://portfolio.example.com
+      # Required when CLIENT_API_KEY is set. Wildcard subdomains are refused.
+      - key: CLIENT_ALLOWED_ORIGINS
+        sync: false
+
       # ---- non-secret, committed on purpose --------------------------------
       - key: NODE_ENV
         value: production
@@ -104,6 +116,10 @@ services:
       # section); turn it down if the logs get noisy.
       - key: FLAG_EVAL_LOG_SAMPLE_RATE
         value: "1"
+      # A signed-in user's identity must be a token from the host server's
+      # signContext(), so a visitor cannot claim to be another user.
+      - key: CLIENT_REQUIRE_SIGNED_CONTEXT
+        value: "true"
 
       # ALLOW_DEV_CREDENTIALS is deliberately ABSENT and must stay that way.
       # Without it the API refuses to start on any of the repository's public

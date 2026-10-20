@@ -12,8 +12,11 @@ import { redirect } from 'next/navigation';
 
 export const SESSION_COOKIE = 'ff_session';
 
-/** Server-side only — deliberately not NEXT_PUBLIC_, so it can't leak to the client. */
-const API_URL = (process.env.FLAGS_API_URL ?? 'http://localhost:4000').replace(/\/+$/, '');
+/**
+ * Server-side only — deliberately not NEXT_PUBLIC_, so it can't leak to the
+ * client. (The SDK setup page prints it into its snippets; a URL is not a secret.)
+ */
+export const API_URL = (process.env.FLAGS_API_URL ?? 'http://localhost:4000').replace(/\/+$/, '');
 
 export interface ApiErrorBody {
   error: { code: string; message: string; details?: { path: string; message: string }[] };

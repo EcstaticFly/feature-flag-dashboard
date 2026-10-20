@@ -50,6 +50,20 @@ describe('database migrations', () => {
     ).rejects.toThrow(/flags_rollout_percentage_range/);
   });
 
+  // Migration 0003. Not null with a default, so every existing row reads as
+  // false: nothing is exposed to browsers until an admin opts a flag in.
+  it('adds client_side as a non-null boolean defaulting to false', async () => {
+    const { rows } = await pool.query(
+      `SELECT data_type, is_nullable, column_default FROM information_schema.columns
+        WHERE table_name = 'flags' AND column_name = 'client_side'`,
+    );
+    expect(rows).toEqual([{ data_type: 'boolean', is_nullable: 'NO', column_default: 'false' }]);
+
+    await pool.query(`INSERT INTO flags (key, name) VALUES ('pre-browser', 'Old')`);
+    const inserted = await pool.query(`SELECT client_side FROM flags WHERE key = 'pre-browser'`);
+    expect(inserted.rows[0].client_side).toBe(false);
+  });
+
   it('enforces unique flag keys', async () => {
     await pool.query(`INSERT INTO flags (key, name) VALUES ('dupe', 'First')`);
     await expect(

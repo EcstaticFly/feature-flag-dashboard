@@ -98,6 +98,16 @@ services:
       FLAG_CACHE_TTL_SECONDS: ${FLAG_CACHE_TTL_SECONDS:-30}
       FLAG_FALLBACK_POLICY: ${FLAG_FALLBACK_POLICY:-fail-closed}
       FLAG_EVAL_LOG_SAMPLE_RATE: ${FLAG_EVAL_LOG_SAMPLE_RATE:-1}
+      # The browser API (flagpilot/browser, flagpilot/react). The client key is
+      # PUBLIC by design — it ships inside web pages — so this default is not a
+      # secret, and the API refuses to start if a client key equals a real one.
+      CLIENT_API_KEY: ${CLIENT_API_KEY:-dev-only-client-key-public}
+      # Exact origins only. These are the local example apps (3001, 5173) and the
+      # SDK's browser test fixture (5174). 5175 is deliberately absent: the tests
+      # use it to prove a disallowed origin gets nothing.
+      CLIENT_ALLOWED_ORIGINS: ${CLIENT_ALLOWED_ORIGINS:-http://localhost:3001,http://localhost:5173,http://localhost:5174}
+      # A browser may only say who the user is with a token your server signed.
+      CLIENT_REQUIRE_SIGNED_CONTEXT: ${CLIENT_REQUIRE_SIGNED_CONTEXT:-true}
       # Read only by `node dist/db/seed.js`, not by the running API.
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me-please}
@@ -124,6 +134,10 @@ services:
     environment:
       API_URL: http://api:4000
       SDK_API_KEY: ${SDK_API_KEY:-dev-only-sdk-api-key-change-me}
+      # k6/client.js — the browser endpoint. The origin must be in the API's
+      # CLIENT_ALLOWED_ORIGINS.
+      CLIENT_API_KEY: ${CLIENT_API_KEY:-dev-only-client-key-public}
+      CLIENT_ORIGIN: ${CLIENT_ORIGIN:-http://localhost:5173}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me-please}
       LOAD_RATE: ${LOAD_RATE:-500}

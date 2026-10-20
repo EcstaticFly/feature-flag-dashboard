@@ -47,8 +47,28 @@ export interface EvaluationResult {
  * which makes the rule inapplicable rather than false.
  */
 function resolveAttribute(context: UserContext, attribute: string): string | undefined {
-  const raw = attribute === 'userId' ? context.userId : context.attributes?.[attribute];
-  if (raw === undefined || raw === null) return undefined;
+  let raw: unknown;
+  if (attribute === 'userId') {
+    raw = context.userId;
+  } else {
+    // Own properties only. A plain `attributes[name]` lookup walks the
+    // prototype chain, so a rule targeting `constructor` or `toString` would
+    // read Object's built-ins for a user who never supplied either. That was
+    // harmless while only servers built contexts; the browser endpoint turns
+    // contexts into public input, so the lookup has to be exact.
+    const attributes = context.attributes;
+    raw =
+      attributes !== null &&
+      typeof attributes === 'object' &&
+      Object.prototype.hasOwnProperty.call(attributes, attribute)
+        ? attributes[attribute]
+        : undefined;
+  }
+  // Anything that is not a primitive makes the rule inapplicable rather than
+  // being stringified into "[object Object]" and compared.
+  if (typeof raw !== 'string' && typeof raw !== 'number' && typeof raw !== 'boolean') {
+    return undefined;
+  }
   return normalizeValue(raw);
 }
 

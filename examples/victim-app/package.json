@@ -11,6 +11,6 @@
   },
   "dependencies": {
     "express": "^5.1.0",
-    "flagpilot": "^0.1.0"
+    "flagpilot": "^0.2.0"
   }
 }

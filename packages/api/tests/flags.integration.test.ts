@@ -98,7 +98,8 @@ describe('flag lifecycle', () => {
     expect(patched.status).toBe(200);
     expect(patched.body).toMatchObject({ enabled: true, rolloutPercentage: 25 });
 
-    // the SDK sees it, with only config fields
+    // the SDK sees it, with only config fields — `clientSide` included, so the
+    // server SDK can bootstrap browsers (getClientFlags)
     const sdk = await request(ctx.app).get('/api/sdk/flags').set(sdkKey());
     expect(sdk.status).toBe(200);
     expect(sdk.body.flags).toEqual([
@@ -107,6 +108,7 @@ describe('flag lifecycle', () => {
         enabled: true,
         rolloutPercentage: 25,
         targetingRules: [{ attribute: 'userId', operator: 'in', values: ['user-007'] }],
+        clientSide: false,
       },
     ]);
 

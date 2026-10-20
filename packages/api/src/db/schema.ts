@@ -24,6 +24,10 @@ export const flags = pgTable(
     enabled: boolean('enabled').notNull().default(false),
     rolloutPercentage: integer('rollout_percentage').notNull().default(0),
     targetingRules: jsonb('targeting_rules').$type<TargetingRule[]>().notNull().default([]),
+    // Whether browser SDKs may read this flag's evaluated value. Default false:
+    // every flag is server-only until an admin deliberately exposes it, and a
+    // flag that is not exposed is invisible to browsers — not even reported as off.
+    clientSide: boolean('client_side').notNull().default(false),
     // Soft delete: the row stays so audit_log.flag_id keeps resolving.
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

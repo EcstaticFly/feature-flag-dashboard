@@ -104,6 +104,7 @@ export async function updateFlagAction(
         enabled: formData.get('enabled') === 'on',
         rolloutPercentage: Number(formData.get('rolloutPercentage') ?? 0),
         targetingRules: parseRules(formData.get('targetingRules')),
+        clientSide: formData.get('clientSide') === 'on',
       }),
     });
   } catch (err) {

@@ -37,6 +37,14 @@ export interface FlagConfig {
   enabled: boolean;
   rolloutPercentage: number;
   targetingRules: TargetingRule[];
+  /**
+   * Whether browser SDKs may read this flag's evaluated on/off value.
+   *
+   * Metadata only — the evaluator never looks at it. Optional so that configs
+   * cached, or served by an API, from before browser support existed stay
+   * valid: absent means false, which is also the safe reading.
+   */
+  clientSide?: boolean;
 }
 
 /**

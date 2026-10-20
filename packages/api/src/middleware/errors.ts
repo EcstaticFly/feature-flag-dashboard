@@ -59,6 +59,22 @@ function isBodyParseError(err: unknown): boolean {
   );
 }
 
+/**
+ * Body-parser's own client errors: a body over the limit (413), an unsupported
+ * charset or encoding (415), an aborted upload (400). They carry an HTTP
+ * status and `expose: true`; without this they fell through to a 500, which
+ * blamed the server for the client's request.
+ */
+function bodyParserClientError(err: unknown): { status: number; code: string } | undefined {
+  if (typeof err !== 'object' || err === null) return undefined;
+  const { status, expose, type } = err as { status?: unknown; expose?: unknown; type?: unknown };
+  if (typeof status !== 'number' || status < 400 || status >= 500) return undefined;
+  if (expose !== true || typeof type !== 'string') return undefined;
+  if (type === 'entity.too.large') return { status, code: 'payload_too_large' };
+  if (status === 415) return { status, code: 'unsupported_media_type' };
+  return { status, code: 'bad_request' };
+}
+
 export function notFoundHandler(_req: Request, res: Response): void {
   res.status(404).json({ error: { code: 'not_found', message: 'not found' } } satisfies ErrorBody);
 }
@@ -83,6 +99,14 @@ export function errorHandler(
   if (isBodyParseError(err)) {
     res.status(400).json({
       error: { code: 'invalid_json', message: 'request body is not valid JSON' },
+    } satisfies ErrorBody);
+    return;
+  }
+
+  const bodyError = bodyParserClientError(err);
+  if (bodyError) {
+    res.status(bodyError.status).json({
+      error: { code: bodyError.code, message: (err as Error).message },
     } satisfies ErrorBody);
     return;
   }

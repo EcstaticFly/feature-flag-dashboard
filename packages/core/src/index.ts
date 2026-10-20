@@ -23,3 +23,25 @@ export {
   type EvaluationReason,
   type EvaluationResult,
 } from './evaluate.js';
+
+export {
+  canonicalContextJson,
+  CONTEXT_LIMITS,
+  FLAG_KEY_PATTERN,
+  isAnonymousContext,
+  MAX_FLAG_KEY_LENGTH,
+  parseContext,
+  RESERVED_ATTRIBUTE_NAMES,
+  toUserContext,
+  type AttributeValue,
+  type ClientContext,
+  type ContextResult,
+} from './context.js';
+
+export {
+  joinSignedContext,
+  SIGNED_CONTEXT_KEY_LABEL,
+  SIGNED_CONTEXT_VERSION,
+  splitSignedContext,
+  type SignedContextParts,
+} from './signed-context.js';

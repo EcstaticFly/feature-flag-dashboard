@@ -17,6 +17,8 @@ export interface Flag {
   enabled: boolean;
   rolloutPercentage: number;
   targetingRules: TargetingRule[];
+  /** Readable by browser SDKs (flagpilot/browser, flagpilot/react) — the on/off value only. */
+  clientSide: boolean;
   createdAt: string;
   updatedAt: string;
   /** Email of the last actor, or 'System (integration)'. Null if never changed. */
@@ -43,6 +45,25 @@ export async function listFlags(): Promise<Flag[]> {
 
 export async function getFlag(key: string): Promise<Flag> {
   return apiFetch<Flag>(`/api/flags/${encodeURIComponent(key)}`);
+}
+
+/**
+ * What the SDK setup page shows. The browser client key is public by design;
+ * the API never returns the SDK key, the integration key or the JWT secret.
+ */
+export interface SdkSettings {
+  serverSdk: { configured: boolean };
+  browserSdk: {
+    enabled: boolean;
+    clientKey: string | null;
+    /** Exact origins, or '*' for any site. */
+    allowedOrigins: string[] | '*';
+    requireSignedContext: boolean;
+  };
+}
+
+export async function getSdkSettings(): Promise<SdkSettings> {
+  return apiFetch<SdkSettings>('/api/settings/sdk');
 }
 
 export async function getFlagAudit(key: string): Promise<AuditEntry[]> {

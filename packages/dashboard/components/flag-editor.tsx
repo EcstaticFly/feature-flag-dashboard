@@ -16,6 +16,7 @@ import type { Flag } from '@/lib/flags';
 export function FlagEditor({ flag }: { flag: Flag }) {
   const [state, formAction, pending] = useActionState(updateFlagAction, IDLE);
   const [enabled, setEnabled] = useState(flag.enabled);
+  const [clientSide, setClientSide] = useState(flag.clientSide);
   const [rollout, setRollout] = useState(flag.rolloutPercentage);
   const [name, setName] = useState(flag.name);
   const [description, setDescription] = useState(flag.description ?? '');
@@ -31,10 +32,18 @@ export function FlagEditor({ flag }: { flag: Flag }) {
    */
   useEffect(() => {
     setEnabled(flag.enabled);
+    setClientSide(flag.clientSide);
     setRollout(flag.rolloutPercentage);
     setName(flag.name);
     setDescription(flag.description ?? '');
-  }, [flag.updatedAt, flag.enabled, flag.rolloutPercentage, flag.name, flag.description]);
+  }, [
+    flag.updatedAt,
+    flag.enabled,
+    flag.clientSide,
+    flag.rolloutPercentage,
+    flag.name,
+    flag.description,
+  ]);
 
   return (
     <form action={formAction} className="space-y-6">
@@ -73,6 +82,24 @@ export function FlagEditor({ flag }: { flag: Flag }) {
           */}
           <Switch id="enabled" checked={enabled} onCheckedChange={setEnabled} aria-label="Enabled" />
           {enabled && <input type="hidden" name="enabled" value="on" />}
+        </div>
+
+        <div className="flex items-center justify-between gap-4 p-5">
+          <div>
+            <Label htmlFor="clientSide">Available to browser SDKs</Label>
+            <p className="mt-0.5 text-sm text-ink-muted">
+              Browsers can read this flag&apos;s on/off value for the signed-in user. Rules and
+              allowlists are never sent. Off means only your servers can check it.
+            </p>
+          </div>
+          {/* The same pattern as Enabled above: no `name`, a hidden input instead. */}
+          <Switch
+            id="clientSide"
+            checked={clientSide}
+            onCheckedChange={setClientSide}
+            aria-label="Available to browser SDKs"
+          />
+          {clientSide && <input type="hidden" name="clientSide" value="on" />}
         </div>
 
         <div className="space-y-3 p-5">

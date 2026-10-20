@@ -39,20 +39,21 @@ describe('module-level init/isEnabled', () => {
     expect(console.warn).toHaveBeenCalledTimes(1);
   });
 
-  it('leaves no half-built client behind when init throws', async () => {
+  it('keeps the host running on defaults when the key is rejected', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const fetch = createFakeFetch(respondWith.status(401));
 
-    await expect(init({ ...BASE, fetch })).rejects.toThrow(/rejected the API key/);
+    const result = await init({ ...BASE, fetch });
 
-    // Still uninitialised, so calls fall back to defaults rather than using a
-    // client that never finished starting.
+    expect(result).toMatchObject({ ok: false, status: { state: 'unauthorized' } });
     expect(isEnabled('demo-flag', { userId: 'u' })).toBe(false);
+    expect(isEnabled('demo-flag', { userId: 'u' }, true)).toBe(true);
   });
 
   it('boots even when the flag service is unreachable', async () => {
     const fetch = createFakeFetch(respondWith.networkError());
 
-    await expect(init({ ...BASE, fetch })).resolves.toBeUndefined();
+    await expect(init({ ...BASE, fetch })).resolves.toMatchObject({ ok: false });
     expect(isEnabled('demo-flag', { userId: 'u' })).toBe(false);
     expect(isEnabled('demo-flag', { userId: 'u' }, true)).toBe(true);
   });

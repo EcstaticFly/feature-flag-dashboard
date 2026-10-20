@@ -43,6 +43,19 @@ const app = createApp({
     redis: () => pingRedis(redis),
   },
   health: { timeoutMs: config.HEALTH_CHECK_TIMEOUT_MS },
+  requireSignedContext: config.CLIENT_REQUIRE_SIGNED_CONTEXT,
+  // The browser API exists only when a client key is configured; loadConfig
+  // has already guaranteed origins are set and the key is not a secret.
+  clientApi:
+    config.CLIENT_API_KEY !== undefined && config.CLIENT_ALLOWED_ORIGINS !== undefined
+      ? {
+          clientApiKey: config.CLIENT_API_KEY,
+          allowedOrigins: config.CLIENT_ALLOWED_ORIGINS,
+          requireSignedContext: config.CLIENT_REQUIRE_SIGNED_CONTEXT,
+          sdkApiKey: config.SDK_API_KEY,
+          secretKeys: [config.SDK_API_KEY, config.INTEGRATION_API_KEY, config.JWT_SECRET],
+        }
+      : undefined,
 });
 
 // Subscribing is best-effort: if Redis is down at boot the cache still works
@@ -55,6 +68,14 @@ const server = app.listen(config.PORT, () => {
   console.log(
     `[api] listening on http://localhost:${config.PORT} ` +
       `(cache ttl ${config.FLAG_CACHE_TTL_SECONDS}s, ${config.FLAG_FALLBACK_POLICY})`,
+  );
+  // The first thing to check when a browser only ever gets defaults.
+  console.log(
+    config.CLIENT_API_KEY === undefined
+      ? '[api] browser API off (CLIENT_API_KEY unset)'
+      : `[api] browser API on for ${
+          config.CLIENT_ALLOWED_ORIGINS === '*' ? 'any origin' : config.CLIENT_ALLOWED_ORIGINS?.join(', ')
+        }; signed contexts ${config.CLIENT_REQUIRE_SIGNED_CONTEXT ? 'required' : 'optional'}`,
   );
 });
 

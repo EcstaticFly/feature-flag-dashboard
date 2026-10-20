@@ -1,6 +1,6 @@
 {
   "name": "flagpilot",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Server-side client SDK for the feature flag dashboard: local evaluation, no network call per check",
   "keywords": [
     "feature-flags",
@@ -16,29 +16,75 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
+      "types": {
+        "import": "./dist/index.d.ts",
+        "require": "./dist/index.d.cts"
+      },
+      "browser": {
+        "import": "./dist/server-stub.js",
+        "require": "./dist/server-stub.cjs"
+      },
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
+    },
+    "./browser": {
+      "types": {
+        "import": "./dist/browser.d.ts",
+        "require": "./dist/browser.d.cts"
+      },
+      "import": "./dist/browser.js",
+      "require": "./dist/browser.cjs"
+    },
+    "./react": {
+      "types": {
+        "import": "./dist/react.d.ts",
+        "require": "./dist/react.d.cts"
+      },
+      "import": "./dist/react.js",
+      "require": "./dist/react.cjs"
     },
     "./package.json": "./package.json"
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
+    "prebuild": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "tsup",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "pretest": "npm run build",
     "test": "vitest run",
     "test:unit": "vitest run",
-    "prepublishOnly": "npm run build"
+    "test:browser": "playwright test",
+    "prepublishOnly": "npm run build",
+    "test:react18": "npm run build && node scripts/test-react-18.mjs",
+    "test:tarball": "npm run build && node scripts/smoke-tarball.mjs"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
   },
   "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.5",
     "@feature-flags/core": "*",
+    "@playwright/test": "^1.64.0",
+    "@testing-library/react": "^16.3.3",
     "@types/node": "^22.19.11",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "happy-dom": "^21.0.1",
+    "publint": "^0.3.25",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
     "vitest": "^5.0.0"
@@ -51,5 +97,16 @@
   "homepage": "https://github.com/EcstaticFly/feature-flag-dashboard/tree/main/packages/sdk#readme",
   "bugs": {
     "url": "https://github.com/EcstaticFly/feature-flag-dashboard/issues"
+  },
+  "sideEffects": false,
+  "typesVersions": {
+    "*": {
+      "browser": [
+        "./dist/browser.d.ts"
+      ],
+      "react": [
+        "./dist/react.d.ts"
+      ]
+    }
   }
 }

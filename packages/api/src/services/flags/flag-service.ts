@@ -34,6 +34,8 @@ export interface PublicFlag {
   enabled: boolean;
   rolloutPercentage: number;
   targetingRules: FlagConfig['targetingRules'];
+  /** Readable by browser SDKs. */
+  clientSide: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -47,6 +49,7 @@ export function toPublicFlag(row: Flag): PublicFlag {
     enabled: row.enabled,
     rolloutPercentage: row.rolloutPercentage,
     targetingRules: row.targetingRules,
+    clientSide: row.clientSide,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -58,6 +61,7 @@ function toFlagConfig(row: Flag): FlagConfig {
     enabled: row.enabled,
     rolloutPercentage: row.rolloutPercentage,
     targetingRules: row.targetingRules,
+    clientSide: row.clientSide,
   };
 }
 
@@ -70,6 +74,7 @@ const MUTABLE_FIELDS = [
   'enabled',
   'rolloutPercentage',
   'targetingRules',
+  'clientSide',
 ] as const;
 
 export async function listFlags(db: Db): Promise<PublicFlag[]> {
@@ -111,6 +116,7 @@ export async function createFlag(
           enabled: input.enabled,
           rolloutPercentage: input.rolloutPercentage,
           targetingRules: input.targetingRules,
+          clientSide: input.clientSide,
         })
         .returning();
 

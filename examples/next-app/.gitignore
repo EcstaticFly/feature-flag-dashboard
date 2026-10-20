@@ -1,0 +1,7 @@
+.next/
+next-env.d.ts
+.env*
+!.env.example
+playwright-report/
+test-results/
+tsconfig.tsbuildinfo

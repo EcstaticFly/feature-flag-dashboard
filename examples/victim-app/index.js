@@ -30,15 +30,15 @@ const users = Array.from({ length: userCount }, (_, i) => `user_${i}`);
 
 console.log(`[victim-app] flag '${flagKey}' via ${apiUrl}, refreshing every ${refreshIntervalMs}ms`);
 
-// A flag service that is merely unreachable resolves fine — isEnabled then
-// serves defaults until a refresh succeeds. Only a misconfiguration throws: a
-// rejected API key, or a missing apiUrl/apiKey. Reporting that in one line and
-// refusing to start is what a real host app should do, rather than booting with
-// every flag silently stuck at its default.
-try {
-  await init({ apiUrl, apiKey, refreshIntervalMs });
-} catch (err) {
-  console.error(`[victim-app] cannot start: ${err.message}`);
+// init() never throws — not even for a bad key — so a host app is never taken
+// down by its flag service. It resolves to { ok, status } instead, and each app
+// decides what to do. A flag service that is merely unreachable ('degraded')
+// is fine: isEnabled serves defaults until a refresh succeeds. This demo
+// refuses to start on a misconfiguration, because booting with every flag
+// silently stuck at its default would make the demo meaningless.
+const { status } = await init({ apiUrl, apiKey, refreshIntervalMs });
+if (status.state === 'misconfigured' || status.state === 'unauthorized') {
+  console.error(`[victim-app] cannot start: ${status.lastError}`);
   console.error('[victim-app] check FLAGS_API_URL and FLAGS_API_KEY, then try again.');
   process.exit(1);
 }

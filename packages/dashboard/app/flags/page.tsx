@@ -1,4 +1,4 @@
-import { Flag as FlagIcon, LogOut } from 'lucide-react';
+import { CodeXml, Flag as FlagIcon, LogOut } from 'lucide-react';
 import Link from 'next/link';
 import { ApiUnreachableError } from '@/lib/api';
 import { listFlags, type Flag } from '@/lib/flags';
@@ -46,6 +46,12 @@ export default async function FlagsPage() {
 
         <div className="flex items-center gap-2">
           <CreateFlagDialog />
+          <Button asChild variant="ghost" size="sm" title="Connect your apps">
+            <Link href="/settings/sdk">
+              <CodeXml className="h-4 w-4" />
+              SDK setup
+            </Link>
+          </Button>
           <Button asChild variant="ghost" size="icon" title="Sign out">
             <a href="/api/logout" aria-label="Sign out">
               <LogOut className="h-4 w-4" />

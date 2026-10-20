@@ -6,8 +6,10 @@ import { createAuthRouter } from './routes/auth.js';
 import { createEvaluateRouter } from './routes/evaluate.js';
 import { createFlagsRouter } from './routes/flags.js';
 import { createIntegrationsRouter } from './integrations/alert.js';
+import { createClientRouter, type ClientApiConfig } from './routes/client.js';
 import { createHealthRouter, type HealthCheck, type HealthRouterOptions } from './routes/health.js';
 import { createSdkRouter } from './routes/sdk.js';
+import { createSettingsRouter } from './routes/settings.js';
 import type { FlagCache } from './services/cache/flag-cache.js';
 import type { FlagService } from './services/flags/flag-service.js';
 
@@ -24,6 +26,13 @@ export interface AppDeps {
   /** Fraction of evaluations that emit the structured log line. Default 1. */
   evalLogSampleRate?: number;
   health?: HealthRouterOptions;
+  /**
+   * The browser API. Absent → `/api/client` is not mounted at all, so a
+   * deployment without CLIENT_API_KEY behaves exactly as before.
+   */
+  clientApi?: Omit<ClientApiConfig, 'logSampleRate'>;
+  /** Whether a signed context is required — reported by the settings endpoint even when disabled. */
+  requireSignedContext?: boolean;
 }
 
 /**
@@ -39,9 +48,18 @@ export function createApp({
   fallback,
   evalLogSampleRate = 1,
   health,
+  clientApi,
+  requireSignedContext = true,
 }: AppDeps): Express {
   const app = express();
   app.disable('x-powered-by');
+
+  // Mounted BEFORE the global JSON parser, so it reads bodies with its own,
+  // much smaller limit. A body parsed once is not parsed again further down.
+  if (clientApi) {
+    app.use('/api/client', createClientRouter(cache, { ...clientApi, logSampleRate: evalLogSampleRate }));
+  }
+
   app.use(express.json({ limit: '100kb' }));
 
   app.use(createHealthRouter(checks, health));
@@ -53,6 +71,18 @@ export function createApp({
   app.use('/api/flags', createFlagsRouter(flags, auth));
   app.use('/api/sdk', createSdkRouter(cache, auth));
   app.use('/api/integrations', createIntegrationsRouter(flags, auth));
+  app.use(
+    '/api/settings',
+    createSettingsRouter(
+      {
+        browserApiEnabled: clientApi !== undefined,
+        clientApiKey: clientApi?.clientApiKey ?? null,
+        allowedOrigins: clientApi?.allowedOrigins ?? [],
+        requireSignedContext,
+      },
+      auth,
+    ),
+  );
 
   app.use(notFoundHandler);
   app.use(errorHandler);

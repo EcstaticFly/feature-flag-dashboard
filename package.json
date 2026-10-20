@@ -18,6 +18,7 @@
     "test": "npm run test --workspaces --if-present",
     "test:unit": "npm run test:unit --workspaces --if-present",
     "test:e2e": "npm run build -w packages/core && npm run build -w packages/sdk && npm run test:e2e -w packages/dashboard",
+    "test:sdk-browser": "npm run build -w packages/core && npm run build -w packages/sdk && npm run test:browser -w packages/sdk",
     "dev:dashboard": "npm run dev -w packages/dashboard",
     "db:generate": "npm run db:generate -w packages/api",
     "db:migrate": "npm run db:migrate -w packages/api",
@@ -26,6 +27,8 @@
     "load:test": "docker compose --profile load run --rm --no-deps k6 run /scripts/evaluate.js",
     "load:chaos": "node k6/run-chaos.mjs",
     "load:blackout": "node k6/run-chaos.mjs blackout",
-    "compose:down": "docker compose down"
+    "compose:down": "docker compose down",
+    "test:examples": "npm run build -w packages/core && npm run build -w packages/sdk && npm run test:e2e -w examples/next-app && npm run test:e2e -w examples/vite-react",
+    "load:client": "docker compose --profile load run --rm --no-deps k6 run /scripts/client.js"
   }
 }

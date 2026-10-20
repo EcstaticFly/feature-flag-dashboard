@@ -3,6 +3,7 @@ import { RedisContainer, type StartedRedisContainer } from '@testcontainers/redi
 import type { Express } from 'express';
 import request from 'supertest';
 import { createApp } from '../../src/app.js';
+import type { AllowedOrigins } from '../../src/client/origins.js';
 import { createDb, type Db } from '../../src/db/client.js';
 import { runMigrations } from '../../src/db/migrate.js';
 import { seedAdmin } from '../../src/db/seed.js';
@@ -21,6 +22,10 @@ export const AUTH: AuthConfig = {
   integrationApiKey: 'integration-alert-key-abc',
 };
 
+/** The browser API's public key in tests, and the one origin allowed to use it. */
+export const CLIENT_KEY = 'integration-client-key-public';
+export const ALLOWED_ORIGIN = 'https://app.example.com';
+
 /** A port nothing listens on, so Redis calls fail immediately. */
 export const DEAD_REDIS_URL = 'redis://127.0.0.1:1';
 
@@ -31,6 +36,11 @@ export interface TestAppOptions {
   ttlSeconds?: number;
   /** What evaluation returns when nothing is reachable. Default fail-closed. */
   fallback?: boolean;
+  /**
+   * Mount the browser API. Off unless asked for, so every existing suite runs
+   * against exactly the app it always did.
+   */
+  clientApi?: { allowedOrigins?: AllowedOrigins; requireSignedContext?: boolean };
 }
 
 export interface TestApp {
@@ -56,7 +66,7 @@ export interface TestApp {
  * that doesn't care about caching additionally proves the Redis-down path works.
  */
 export async function startTestApp(options: TestAppOptions = {}): Promise<TestApp> {
-  const { withRedis = false, ttlSeconds = 30, fallback = false } = options;
+  const { withRedis = false, ttlSeconds = 30, fallback = false, clientApi } = options;
 
   const postgres = await new PostgreSqlContainer('postgres:16-alpine').start();
   const connectionUri = postgres.getConnectionUri();
@@ -81,6 +91,16 @@ export async function startTestApp(options: TestAppOptions = {}): Promise<TestAp
     cache,
     fallback,
     auth: AUTH,
+    requireSignedContext: clientApi?.requireSignedContext ?? true,
+    clientApi: clientApi
+      ? {
+          clientApiKey: CLIENT_KEY,
+          allowedOrigins: clientApi.allowedOrigins ?? [ALLOWED_ORIGIN],
+          requireSignedContext: clientApi.requireSignedContext ?? true,
+          sdkApiKey: AUTH.sdkApiKey,
+          secretKeys: [AUTH.sdkApiKey, AUTH.integrationApiKey, AUTH.jwtSecret],
+        }
+      : undefined,
     checks: {
       postgres: async () => {
         await pool.query('SELECT 1');

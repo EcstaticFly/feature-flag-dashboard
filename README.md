@@ -1,8 +1,8 @@
 # feature-flag-dashboard
 
 Ship code dark, roll out by percentage/cohort, roll back instantly. A feature-flag
-service (Express + PostgreSQL + Redis), a TypeScript client SDK, and an admin dashboard
-(Next.js), managed as an npm-workspaces monorepo.
+service (Express + PostgreSQL + Redis), one TypeScript SDK with entry points for servers,
+browsers and React, and an admin dashboard (Next.js), managed as an npm-workspaces monorepo.
 
 **Full requirements spec:** [../docs/SRS.md](../docs/SRS.md) — it sits in the parent folder,
 alongside this one, so the link resolves in a local checkout rather than on GitHub alone.
@@ -52,6 +52,14 @@ timer and evaluates them in-process with `@feature-flags/core`, so a check costs
 at all and a consumer needs no cache credentials. `GET /api/flags/:key/evaluate` exists as a
 server-side path for non-JavaScript clients and the k6 load test; it imports the same
 evaluator, which is why the two can never disagree about a user.
+
+**Browsers get answers, never rules.** The SDK key can read every rule and allowlist, so it must
+never reach a browser. `flagpilot/browser` and `flagpilot/react` instead call
+`POST /api/client/flags` with a separate, public **client key**, and receive only
+`{ "flag-key": true | false }` — evaluated on the server, for one user, and only for flags an admin
+has marked *Available to browser SDKs*. A signed-in user's identity arrives as a token signed by the
+host's server, so a visitor cannot claim to be someone else. See
+[Client-side flags](#client-side-flags-browser-and-react).
 
 ## Prerequisites
 
@@ -188,6 +196,12 @@ Two credentials, deliberately separate so a client app can never change a flag:
 | Admin JWT (from `POST /api/auth/login`) | `Authorization: Bearer <token>` | Everything, including all writes |
 | `SDK_API_KEY` | `x-api-key: <key>` | Read-only SDK endpoints, nothing else |
 | `INTEGRATION_API_KEY` | `x-integration-key: <key>` | Disabling a flag via the alert endpoint, nothing else |
+| `CLIENT_API_KEY` — **public** by design | `x-flagpilot-client-key: <key>` | The on/off values of browser-exposed flags, from allowed origins only |
+
+The SDK key and the integration key are secrets, so the API refuses either one on any request that
+carries an `Origin` header — which means a browser sent it (`403 secret_key_from_browser`, logged
+with the origin, never the key). Server-side callers send no `Origin`, so they are unaffected.
+Admin-JWT requests are untouched: the dashboard calls the API server-to-server anyway.
 
 | Method | Endpoint | Auth | Purpose |
 |---|---|---|---|
@@ -201,10 +215,15 @@ Two credentials, deliberately separate so a client app can never change a flag:
 | `GET` | `/api/flags/:key/evaluate` | SDK key *or* admin | Server-side evaluation for non-JS clients |
 | `GET` | `/api/flags/:key/audit` | admin | Change history, newest first, with the actor resolved to an email |
 | `POST` | `/api/integrations/alert` | `x-integration-key` | Disables a flag in response to an external alert |
+| `POST` | `/api/client/flags` | client key, from an allowed origin | `{ flags: { key: boolean } }` for browser-exposed flags, for one user. Only exists when `CLIENT_API_KEY` is set — see [Client-side flags](#client-side-flags-browser-and-react) |
+| `GET` | `/api/settings/sdk` | admin | What the dashboard's SDK setup page shows: the public client key, allowed origins, signing mode. Never a secret |
 
 Errors always use one envelope: `{ "error": { "code", "message", "details"? } }` —
 `400 validation_error` / `invalid_json`, `401 unauthorized`, `404 flag_not_found`,
-`409 flag_key_exists`.
+`409 flag_key_exists`, `413 payload_too_large`, `415 unsupported_media_type`. The browser endpoint
+adds `401 invalid_client_key`, `403 origin_not_allowed` / `signed_context_required` /
+`invalid_signed_context`, `400 invalid_context` / `ambiguous_context`, and
+`503 flags_unavailable`.
 
 ```sh
 TOKEN=$(curl -s -X POST localhost:4000/api/auth/login -H 'content-type: application/json' \
@@ -261,6 +280,14 @@ session is a separate case: the token passes the cookie check and the API return
 `lib/api.ts` turns into a redirect through `/api/logout`, clearing the cookie and explaining
 why on the login page.
 
+Each flag has an **Available to browser SDKs** switch (off for every new flag). Turning it on lets
+browsers read that flag's on/off value; rules and allowlists never leave the server. The list marks
+such flags with a **Browser** badge, and the history records the change as *Browser SDKs:
+server only → exposed*. The **SDK setup** page (`/settings/sdk`, linked from the flag list) shows
+whether the browser endpoint is on, the public client key, the allowed origins and the signing
+mode, with copy-paste setup for Express, React and Next.js. It never shows the SDK key — the API
+does not return it, even to an admin.
+
 Mutations are Server Actions that call the API and then `revalidatePath`, so a change appears
 in the list without a manual refresh. They **return** failures rather than throwing: a
 duplicate key becomes an inline message on the key field with the typed input preserved, and
@@ -289,10 +316,10 @@ runs in one, and `e2e/private-browsing.spec.ts` asserts it explicitly. Only a br
 configured to block all cookies outright would fail, and that breaks every cookie-based login
 on the web.
 
-## Client SDK
+## Server SDK
 
-`packages/sdk` is the package a host application installs. It does **not** call the API per
-check: it downloads whole flag configs from `/api/sdk/flags` on a timer and evaluates each
+`flagpilot` is the package a host application's **server** installs. It does not call the API
+per check: it downloads whole flag configs from `/api/sdk/flags` on a timer and evaluates each
 user in-process with `@feature-flags/core` — the same module the API runs.
 
 ```ts
@@ -305,38 +332,175 @@ if (isEnabled('new-checkout-flow', { userId: user.id })) { /* ... */ }
 
 - `isEnabled` is **synchronous** and touches only memory — roughly a microsecond per call.
 - Load on the API is proportional to **SDK instances**, not users.
-- `isEnabled` **never throws**; a dead flag service means the last known configs keep
-  serving, then documented defaults.
-- Server-side only: the SDK key must never reach a browser.
+- **Nothing throws** — not `isEnabled`, and since 0.2.0 not `init` either. A wrong key, a bad URL
+  or a flag service that is down resolves `init()` to `{ ok: false, status }`, and every check
+  serves the last known configs or its default, so a flag-service problem can never stop the host
+  app from booting. A rejected key is retried every 5 minutes, so fixing it needs no restart.
+- **Server-side only**: the SDK key must never reach a browser. If browser code imports `flagpilot`
+  anyway, bundlers resolve it to a stub with no network code and no key handling, which logs one
+  error and returns defaults.
+- For the browser SDKs it also provides `getClientFlags(context)` — the browser flags' values, for
+  a correct server-rendered first paint — and `signContext(context)`, a signed identity token.
 
 See [packages/sdk/README.md](packages/sdk/README.md) for the full API, and
 [examples/victim-app](examples/victim-app) for a runnable demo:
 
 ```sh
-FLAGS_API_URL=http://localhost:4000 FLAGS_API_KEY=dev-only-sdk-api-key-change-me   FLAG_KEY=demo-flag REFRESH_MS=5000 node examples/victim-app/index.js
+FLAGS_API_URL=http://localhost:4000 FLAGS_API_KEY=dev-only-sdk-api-key-change-me \
+  FLAG_KEY=demo-flag REFRESH_MS=5000 node examples/victim-app/index.js
 ```
 
 Change the flag's rollout through the API and the printed count follows within
 `REFRESH_MS`, with no restart.
 
+## Client-side flags (browser and React)
+
+The same package has two more entry points, for code that runs in a browser. One install:
+`npm install flagpilot`.
+
+| Import | For |
+|---|---|
+| `flagpilot` | Servers — Node, Express, Next.js server components and route handlers |
+| `flagpilot/browser` | Browser code in any framework, or none |
+| `flagpilot/react` | React 18 and 19 — Vite, Create React App, Next.js client components |
+
+### How it is kept safe
+
+| Risk | What prevents it |
+|---|---|
+| A browser reads targeting rules, percentages or allowlists | They never leave the server. The browser endpoint evaluates there and returns `{ key: boolean }` only — no reason, bucket or rule |
+| A browser learns that a server-only flag exists | Per-flag opt-in, off by default. Flags that are not exposed are **absent** from the response, not `false` |
+| A visitor claims to be another user, to see their flags or probe an allowlist | With `CLIENT_REQUIRE_SIGNED_CONTEXT=true` (the default), a user id or attributes are accepted only inside an HMAC-SHA256 token from the host server's `signContext()`. The signature is checked in constant time, before the payload is even parsed |
+| Another website uses your client key | Exact-origin allowlist (`CLIENT_ALLOWED_ORIGINS`). A disallowed origin gets `403` and no CORS headers, so its browser cannot read the answer. Wildcard subdomains and the `null` origin are refused at boot |
+| The SDK key ends up in a browser | `flagpilot` resolves to a key-less stub in browser bundles; the API refuses a secret key sent with an `Origin` header; a secret sent *as* the client key is rejected and logged; the API will not start if the client key equals a secret |
+| Oversized or hostile input | 8 KB body limit, strict schemas, bounded contexts, `__proto__` / `constructor` / `prototype` refused as attribute names, own-property lookups in the evaluator |
+| A user's answer cached or leaked | `Cache-Control: no-store`, `Vary: Origin`, `nosniff`. The context travels in a POST body, never a URL; cookies are never sent (`credentials: 'omit'`); no `Referer`; redirects refused |
+
+**Why the signing key comes from the SDK key:** the host server already holds it, so `signContext`
+needs no extra setup — and anyone with the SDK key can already read every rule and evaluate any user,
+so being able to sign adds nothing. Tokens do not expire, deliberately: a token only ever reveals that
+user's own browser flags, which their browser already shows, and a stable token means a server
+re-render does not trigger a refetch. Rotating the SDK key invalidates every token.
+
+### Setting it up
+
+1. **Turn the endpoint on.** On the API, set `CLIENT_API_KEY` (a new random value) and
+   `CLIENT_ALLOWED_ORIGINS` (your sites' exact origins). Without them `/api/client/flags` does not
+   exist. The local compose stack sets both.
+2. **Expose a flag.** In the dashboard, switch on *Available to browser SDKs*.
+3. **Use it.** The dashboard's **SDK setup** page has these snippets with your values filled in.
+
+React (Vite, Create React App):
+
+```tsx
+import { FlagProvider, useFlag } from 'flagpilot/react';
+
+<FlagProvider apiUrl="https://flags.example.com" clientKey="…" signedContext={session?.flagToken}>
+  <App />
+</FlagProvider>;
+
+function Navbar() {
+  return <h1>{useFlag('new-navbar-title') ? 'New title' : 'Old title'}</h1>;
+}
+```
+
+Your backend adds the token wherever it returns the signed-in user:
+`flagToken: await signContext({ userId: user.id })`. Leave it out for visitors who are not signed in.
+[examples/vite-react](examples/vite-react) is the complete, tested version, on React 18.
+
+Next.js (App Router), where the server renders the right values on the first paint:
+
+```tsx
+// app/layout.tsx — a server component
+const { initialFlags, signedContext } = await flagBootstrap(user); // getClientFlags() + signContext()
+
+<FlagProvider apiUrl={…} clientKey={…} initialFlags={initialFlags} signedContext={signedContext}>
+  {children}
+</FlagProvider>;
+```
+
+Client components call `useFlag`; server components call `isEnabled` directly.
+[examples/next-app](examples/next-app) is the complete, tested version.
+
+Anything else:
+
+```ts
+import { createBrowserClient } from 'flagpilot/browser';
+
+const flags = createBrowserClient({ apiUrl, clientKey, signedContext });
+flags.subscribe(render);             // called whenever a value changes
+flags.isEnabled('new-navbar-title'); // synchronous, from memory
+```
+
+**Proxy pattern.** `apiUrl` may be a same-origin path such as `/flagpilot` that your own server
+forwards to the flag service. Then there is no CORS at all, the request is first-party, and ad
+blockers that block third-party requests do not see it.
+
+**Content Security Policy.** A page with a CSP needs the flag service in `connect-src`
+(`connect-src 'self' https://flags.example.com`). Without it the browser blocks the request; the SDK
+serves defaults and logs once, naming CSP as a likely cause.
+
+### Failure guarantees
+
+None of the three entry points can break the page or the server that uses it:
+
+- **No public function throws or rejects.** A bad config, a wrong key, a disallowed origin or a dead
+  flag service all mean the last known values or defaults, and at most one console message.
+- **Nothing runs at import** — no `window`, `document` or storage access — so server rendering is safe.
+- **Bounded work.** One request at a time, a timeout on each, backoff on failure, no polling while the
+  tab is hidden, and a refresh when the tab becomes visible again or the network returns, if the
+  values are due. Responses over 256 KB or 2,000 flags are refused.
+- **A user switch never shows the previous user's values** — not even while the new request is in
+  flight — and a late answer for the old user is discarded.
+- **Hydration-safe.** React first renders exactly what the server rendered, then applies newer values.
+- **Host bugs stay contained.** A throwing subscriber does not stop the others, and a polluted
+  `Object.prototype` cannot invent a flag.
+
+### Normal, private and locked-down browsers
+
+The browser SDKs need **no cookies and no storage**, and create **no identifiers**, so they behave
+the same in a normal window, a private/incognito window, or with storage disabled entirely. Storage is
+used only with `persist: true` (the Vite example turns it on): the last values are then kept in
+`localStorage`, tagged with a hash of the user's identity so they are never shown to a different user,
+and ignored after 7 days. If storage is blocked or full it is simply not used; in a private window the
+cache ends with the session.
+
+### Limits
+
+| | |
+|---|---|
+| Request body | 8 KB |
+| `userId` | 256 characters |
+| Attributes | 32; names 1–64 characters; values a string of ≤ 256 characters, a finite number, or a boolean |
+| Signed token | 4,096 characters |
+| Browser refresh | every 60 s by default (15 s to 1 h; 0 stops after the first success), plus on focus and reconnect when due |
+
 ## Testing
 
-Four suites. All four must pass for the project to be considered complete.
+Every suite below must pass for the project to be considered complete.
 
 | Suite | Command | Needs | What it covers |
 |---|---|---|---|
-| Vitest **unit** | `npm run test:unit` | nothing | Bucketing and rule evaluation, JWT, scrypt, config parsing, the [credential guard](#credentials-and-why-the-placeholders-are-safe), the circuit breaker, SDK behaviour against a stub server |
-| Vitest **integration** | `npm test` | Docker | The same, plus every route against a real Postgres and Redis via Testcontainers — cache tiers, invalidation, audit, durability, degradation |
-| **Playwright** E2E | `npm run test:e2e` | API running, `npx playwright install chromium` | The dashboard's flows end to end, and one real SDK consumer observing a UI change |
-| **k6** load + chaos | `npm run load:test`, `load:chaos`, `load:blackout` | stack running | NFR-FD-01 latency, NFR-FD-03 throughput, NFR-FD-04 degradation under load |
+| Vitest **unit** | `npm run test:unit` | nothing | Bucketing and rule evaluation, JWT, scrypt, config parsing, the [credential guard](#credentials-and-why-the-placeholders-are-safe), the circuit breaker, origin parsing and context signing; the server SDK against a stub server; the browser client (happy-dom) and the React bindings, including SSR and hydration; checks on the built package |
+| Vitest **integration** | `npm test` | Docker | The same, plus every route against a real Postgres and Redis via Testcontainers — cache tiers, invalidation, audit, durability, degradation, and the browser endpoint's CORS, keys and signed identities |
+| **Playwright** dashboard | `npm run test:e2e` | API running, `npx playwright install chromium` | The dashboard's flows end to end, one real SDK consumer observing a UI change, and the browser-SDK switch reaching the browser endpoint |
+| **Playwright** browser SDK | `npm run test:sdk-browser` | API running, `npx playwright install chromium firefox webkit` | `flagpilot/browser` in Chromium, Firefox and WebKit with real CORS: disallowed origins, CSP blocks, sandboxed iframes, blocked storage, offline, flag service down — zero page errors in every one |
+| **Playwright** examples | `npm run test:examples` | API running | The Next.js and Vite + React 18 examples as production builds: first paint, hydration, signed identities, live updates, outages, bundle contents |
+| **React 18** | `npm run test:react18 -w packages/sdk` | network | The React tests against React 18, installed from the packed tarball |
+| **Tarball** | `npm run test:tarball -w packages/sdk` | network | The packed package installed outside the repo: Node ESM + CJS without React, a Vite + React 18 build, a Next.js build |
+| **k6** load + chaos | `npm run load:test`, `load:chaos`, `load:blackout`, `load:client` | stack running | NFR-FD-01 latency, NFR-FD-03 throughput, NFR-FD-04 degradation under load; the browser endpoint at the same bar |
 
 A healthy run:
 
 ```
-npm run test:unit    →  api 111, core 66, sdk 69   (246 tests, 15 files)
-npm test             →  api 218, core 66, sdk 69   (353 tests, 24 files)
-npm run test:e2e     →  26 passed
-npm run load:test    →  exit 0, every threshold green
+npm run test:unit            →  api 159, core 117, sdk 194   (470 tests, 29 files)
+npm test                     →  api 313, core 117, sdk 194   (624 tests, 40 files)
+npm run test:e2e             →  30 passed
+npm run test:sdk-browser     →  33 passed (11 scenarios × 3 browsers)
+npm run test:examples        →  6 passed (next-app), 6 passed (vite-react)
+npm run test:react18 -w packages/sdk   →  18 passed on React 18.3.1
+npm run test:tarball -w packages/sdk   →  14 checks ok
+npm run load:test            →  exit 0, every threshold green (and load:chaos, load:blackout, load:client)
 ```
 
 `npm test` is the default gate and needs Docker, because the integration specs start real
@@ -380,6 +544,22 @@ milestone claimed it until M8 traced the spec and gave it a test.
 | FR-INT-03 | System A disables the referenced flag on a qualifying alert | `integrations/alert.ts` → `updateFlag` | `integrations.integration.test.ts`, `e2e/integration-alert.spec.ts` |
 | FR-INT-05 | Every auto-disable appears in the audit log, system-tagged | Same path; audit written in the same transaction | `integrations.integration.test.ts` ("writes exactly one audit entry when the same alert arrives twice") |
 
+### Beyond the SRS: client-side flags (M10)
+
+Not SRS requirements — the SRS's SDK is server-side — so traced here separately.
+
+| Capability | Implemented in | Proved by |
+|---|---|---|
+| Browsers get one user's booleans, only for exposed flags; no rules ever | `routes/client.ts`, per-flag `client_side` column | `client.integration.test.ts` ("never sends rules, percentages, reasons or buckets", "does not reveal that a server-only flag exists — absent, not false"), `e2e/browser-sdk.spec.ts` ("hiding a flag again removes it from browsers entirely") |
+| A visitor cannot impersonate a user | `client/signed-context.ts` (HMAC-SHA256, constant-time, verified before parsing); SDK `signContext` | `signed-context.test.ts`, `sign-interop.test.ts` (SDK tokens verify in the API, byte-identical), `client.integration.test.ts` ("refuses a browser naming its own user while signing is required"), `examples/*/e2e` (heidi sees `false` only through her signed token) |
+| Only allowed sites can use the client key | `client/origins.ts`, CORS in `routes/client.ts` | `origins.test.ts`, `client-config.test.ts`, `sdk/e2e/browser.spec.ts` (a real disallowed origin, a sandboxed iframe) |
+| Secret keys cannot be used from a browser | `refuseSecretFromBrowser` in `middleware/auth.ts`; the `browser` export condition | `browser-support.integration.test.ts`, `sdk/tests/package.test.ts` (a browser bundle of `flagpilot` contains no key handling), `examples/*/e2e` (no secret in any bundle or request) |
+| No SDK failure can break the host | Never-throw contract in all three entry points | `sdk/tests/browser/*`, `sdk/tests/init.test.ts`, `sdk/tests/react/*`, `sdk/e2e/browser.spec.ts` (zero page errors under every failure), `examples/*/e2e` (outages) |
+| Normal, private and locked-down browsers | No cookies, optional guarded storage | `sdk/tests/browser/persistence.test.ts`, `sdk/e2e/browser.spec.ts` (a reused profile vs a fresh private one, storage that throws on access), `examples/vite-react/e2e` ("storage blocked entirely") |
+| React 18 and 19, SSR, hydration, Strict Mode | `flagpilot/react` (`useSyncExternalStore` with a stable server snapshot) | `sdk/tests/react/*` on React 19, and on React 18 via `test:react18`; `examples/next-app/e2e` (server HTML already correct, no hydration errors) |
+| Managed from the dashboard | Editor switch, list badge, audit label, `/settings/sdk` | `e2e/browser-sdk.spec.ts` (survives a save, reaches browsers, the setup page never contains a secret) |
+| Fast enough | In-memory evaluation behind the endpoint | `k6/client.js`: p99 0.49 ms at 500 req/s |
+
 **`FR-INT-01`, `FR-INT-02` and `FR-INT-04` are System B's responsibility** — tagging an issue with
 a flag key, deciding a threshold was crossed, and retrying with backoff. This side implements the
 endpoint they call and is deliberately unaware of them; nothing calls it yet.
@@ -395,8 +575,18 @@ endpoint they call and is deliberately unaware of them; nothing calls it yet.
   per-evaluation log line only sees `/api/flags/:key/evaluate` traffic, not SDK evaluations.
   A future analytics service would have the SDK batch evaluation counts back to the API.
 - **Soft delete** keeps audit rows valid; a partial unique index lets a deleted key be reused.
+- **Browsers never evaluate.** The server SDK evaluates locally because it can be trusted with
+  every rule; a browser cannot, so the browser SDKs ask the API for one user's booleans instead.
+  One package with three entry points rather than three packages: one version, one install, and a
+  `browser` export condition that makes the server entry safe to import by mistake.
 - **v1 omissions:** login rate limiting, refresh tokens, negative caching, single-flight on a
-  simultaneous cache expiry (thundering herd), and a browser SDK build.
+  simultaneous cache expiry (thundering herd). For the browser endpoint: per-IP rate limiting (the
+  client IP depends on proxy configuration, and a wrong setting would throttle whole offices behind
+  one NAT — volumetric protection belongs at the platform edge), streaming updates (polling plus
+  refresh-on-focus suffices), auto-generated anonymous ids (a device identifier with consent
+  implications — hosts pass their own), token expiry (reasoned in
+  [Client-side flags](#client-side-flags-browser-and-react)), wildcard-subdomain origins, and
+  bindings beyond React.
 
 ### Deviations from the SRS
 
@@ -408,7 +598,8 @@ Where this repo departs from [../docs/SRS.md](../docs/SRS.md), and why:
 | The **SDK does not read Redis directly**, as the §3.3 diagram shows it doing | It fetches whole configs from `/api/sdk/flags` and evaluates in-process, so a check costs no network at all and a consumer needs no cache credentials. The trade-off is a refresh-interval delay instead of instant propagation, which NFR-FD-02's 2 s window accommodates |
 | Playwright lives in `packages/dashboard/**e2e**/`, not `tests/` (§3.7) | Keeps it outside the Vitest glob, so `npm test` needs no browser |
 | **`CLAUDE.md` is gitignored** though §3.7 lists it at the root | It is agent instructions, not product documentation; everything a human needs is in this file |
-| Extra top-level directories not in §3.7: `packages/core/`, `k6/`, `examples/victim-app/` | Consequences of the two decisions above, plus the load suite and a runnable SDK demo |
+| Extra top-level directories not in §3.7: `packages/core/`, `k6/`, `examples/` (`victim-app`, `next-app`, `vite-react`) | Consequences of the two decisions above, plus the load suite and runnable SDK demos — the Next.js and Vite examples double as the browser SDKs' real-bundler tests |
+| **Browser and React SDKs**, which the SRS does not ask for (its SDK is server-side) | Added in M10 so the same flags can drive client-rendered UI. They add an endpoint and a dashboard toggle without changing any SRS behaviour: no flag is exposed until an admin opts it in, and the existing SDK protocol is untouched |
 | The **dashboard is not in `docker-compose`** | It is deployed separately (Vercel), and a container on port 3000 would collide with Playwright's own server. Compose covers the back end, which is what needs orchestrating |
 | **No multi-tenancy, projects or user management** | Out of scope by design: one seeded admin, one flag namespace. There is no signup flow |
 | **RabbitMQ is not used**, though it appears in the wider stack | Nothing here is queue-shaped: a flag write is a single transaction that must be immediately readable. It belongs in System B, where fingerprinting and alerting genuinely are |
@@ -521,6 +712,23 @@ the fallback: still 500.1 req/s, still 0 failed, p99 **1.07 ms**, and every resp
 the run that produced the circuit breaker described above; before it, the same test answered
 correctly but at 238 req/s with a p99 of 1503 ms.
 
+The blackout gate is applied to the **steady state**: after the first 3 s, p99 must stay under
+25 ms. The first moments of an outage are spent detecting it — the breaker opens after 5
+consecutive database failures, and how long those take depends on how fast the host's DNS reports
+a stopped container's hostname as gone (anywhere from a few ms to 230 ms has been observed on the
+same laptop). Those requests are bounded instead (none may exceed 3 s). Disabling the breaker
+still fails the gate decisively: steady-state p99 1,548 ms at 230 req/s.
+
+**The browser endpoint** (`POST /api/client/flags`, M10) is held to the same bar. Each request
+carries an allowed `Origin` and the client key; 70% carry a signed identity the API must verify
+with HMAC before evaluating 25 browser flags:
+
+| | Observed | Target |
+|---|---|---|
+| Requests | **30,080**, 0.000% failed, every check passing | 500 req/s for 60 s |
+| **Handler p99** | **0.49 ms** | < 5 ms |
+| Handler p95 | 0.30 ms | |
+
 Reproduce any of it:
 
 ```sh
@@ -528,6 +736,7 @@ npm run compose:up
 npm run load:test        # the NFR gate
 npm run load:chaos       # the same load, Redis killed mid-run
 npm run load:blackout    # the same load, nothing reachable at all
+npm run load:client      # the browser endpoint, signed identities included
 ```
 
 Each run exits non-zero if a threshold is crossed, so these are pass/fail gates rather than
@@ -545,7 +754,7 @@ reviewable rather than a set of remembered dashboard clicks.
 | Postgres | **Neon** (free) | Scales to zero after ~5 min idle. Connection string needs `?sslmode=require` |
 | Redis | **Upstash** (free) | `rediss://` — TLS, enabled by the scheme |
 | Dashboard | **Vercel** | Root directory `packages/dashboard`, one env var: `FLAGS_API_URL` |
-| SDK | **npm** — [`flagpilot`](https://www.npmjs.com/package/flagpilot) | `npm install flagpilot` |
+| SDK | **npm** — [`flagpilot`](https://www.npmjs.com/package/flagpilot) | `npm install flagpilot`; 0.2.0 adds `flagpilot/browser` and `flagpilot/react` |
 
 Step-by-step instructions are in
 [docs/milestone-9-deployment.md](../docs/milestone-9-deployment.md). Four things that are easy to
@@ -567,6 +776,14 @@ local defaults an ordinary cold start reads as an outage — and five of those i
 **Never set `ALLOW_DEV_CREDENTIALS` in a deployment.** Leaving it unset is what makes a forgotten
 secret fail the deploy loudly instead of quietly publishing an unauthenticated service. See
 [Credentials](#credentials-and-why-the-placeholders-are-safe).
+
+**Browser SDKs: deploy in this order.** (1) The API first — the browser endpoint and the
+`client_side` migration must exist before anything calls them; set `CLIENT_API_KEY` and
+`CLIENT_ALLOWED_ORIGINS` in Render's Environment tab (a blueprint only prompts for `sync: false`
+values when it is first created). (2) The dashboard — its editor now sends `clientSide`, which an
+older API would reject. (3) Publish `flagpilot@0.2.0`. (4) Add each site that uses a browser SDK to
+`CLIENT_ALLOWED_ORIGINS`. Existing `flagpilot@0.1.0` installs keep working against the new API: the
+only change to the feed they read is an extra field, which they ignore.
 
 **Free services sleep.** Render spins a free web service down after ~15 minutes idle, and the next
 request pays a cold start of up to ~50 s. Point a cron (cron-job.org or similar) at
@@ -656,6 +873,11 @@ documented fail-closed policy.
 | `npm run load:test` | k6 load test against the evaluate endpoint — the NFR-01/NFR-03 gate |
 | `npm run load:chaos` | The same load with Redis stopped mid-run |
 | `npm run load:blackout` | The same load with Redis *and* Postgres stopped — exercises the fallback policy |
+| `npm run load:client` | k6 against the browser endpoint, with signed identities — the same 5 ms / 500 req/s bar |
+| `npm run test:sdk-browser` | Playwright: the browser SDK in Chromium, Firefox and WebKit against the real API (needs the stack running) |
+| `npm run test:examples` | Playwright: the Next.js and Vite + React 18 examples, production builds, against the real API |
+| `npm run test:react18 -w packages/sdk` | Packs the SDK and runs the React tests against React 18 in a throwaway project (needs network) |
+| `npm run test:tarball -w packages/sdk` | Pre-publish check: installs the packed tarball outside the repo and builds a Node, a Vite + React 18 and a Next.js project with it (needs network) |
 
 ### Schema change workflow
 
@@ -672,8 +894,11 @@ feature-flag-dashboard/
 ├── LICENSE                      # MIT; copied into packages/sdk so the npm tarball carries it
 ├── package.json                 # npm workspaces root
 ├── tsconfig.base.json
-├── k6/                          # load + chaos tests (evaluate, chaos, blackout, orchestrator)
-├── examples/victim-app/         # runnable SDK demo (also the M9 runbook script)
+├── k6/                          # load + chaos tests (evaluate, chaos, blackout, client, orchestrator)
+├── examples/
+│   ├── victim-app/              # runnable server-SDK demo (also the M9 runbook script)
+│   ├── next-app/                # Next.js App Router: server + client flags, signed identities (port 3001)
+│   └── vite-react/              # Vite + React 18 SPA, plus a tiny signing server (ports 5173, 5180)
 └── packages/
     ├── core/                    # @feature-flags/core — bucketing + evaluation + types, ZERO runtime deps
     ├── api/                     # Flag Service API (Express 5, Drizzle, ioredis)
@@ -685,16 +910,24 @@ feature-flag-dashboard/
     │   │   ├── config.ts        # zod-validated env
     │   │   ├── auth/            # jwt.ts (hand-rolled HS256), password.ts (scrypt)
     │   │   ├── db/              # schema.ts, client.ts, migrate.ts, seed.ts, wait.ts (cold-start retry)
-    │   │   ├── middleware/      # auth.ts (two credentials), errors.ts (one envelope)
-    │   │   ├── routes/          # health.ts, auth.ts, flags.ts, sdk.ts, evaluate.ts
+    │   │   ├── middleware/      # auth.ts (credentials; secret keys refused from browsers), errors.ts (one envelope)
+    │   │   ├── routes/          # health.ts, auth.ts, flags.ts, sdk.ts, evaluate.ts, client.ts, settings.ts
+    │   │   ├── client/          # origins.ts (exact-origin allowlist), signed-context.ts (HMAC verification)
     │   │   ├── services/flags/  # flag-service.ts — the only place flag SQL lives
     │   │   ├── services/cache/  # redis.ts, flag-cache.ts (two tiers), circuit.ts (breaker on the DB tier)
     │   │   ├── validation/      # zod schemas for flag input
     │   │   ├── integrations/      # alert.ts — POST /api/integrations/alert
     │   └── tests/               # *.test.ts (unit), *.integration.test.ts (Testcontainers)
-    ├── sdk/                     # flagpilot — published to npm; bundles core, local evaluation
+    ├── sdk/                     # flagpilot — published to npm; bundles core
+    │   ├── src/index.ts         #   flagpilot          server SDK: local evaluation, getClientFlags, signContext
+    │   ├── src/server-stub.ts   #   what `flagpilot` resolves to in a browser bundle — no key, no fetch
+    │   ├── src/browser/         #   flagpilot/browser  framework-free browser client
+    │   ├── src/react/           #   flagpilot/react    FlagProvider + hooks ("use client")
+    │   ├── tests/               #   Vitest: node, happy-dom, React
+    │   ├── scripts/             #   test-react-18.mjs — the React tests on React 18, from the packed tarball
+    │   └── e2e/                 #   Playwright: Chromium, Firefox, WebKit against the real API
     └── dashboard/               # Next.js App Router admin UI
-        ├── app/                 # login, flags list + detail, route handlers, server actions
+        ├── app/                 # login, flags list + detail, SDK setup page, route handlers, server actions
         ├── components/          # rule builder, audit timeline, UI primitives
         ├── lib/                 # server-only API client (holds the cookie)
         ├── proxy.ts             # auth gate (Next 16's middleware)
@@ -725,6 +958,9 @@ both the API and the SDK, and must carry no dependencies into a consumer's app.
 | `ALLOW_DEV_CREDENTIALS` | `false` | Permits the public placeholder credentials below. Set only by `docker-compose.yml`; a real deployment must never set it |
 | `FLAG_EVAL_LOG_SAMPLE_RATE` | `1` | Fraction of evaluations that emit the structured log line (0-1); costs ~0.12 ms at p99 at the default |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | — | Read by `npm run db:seed` only, not by the running API |
+| `CLIENT_API_KEY` | unset (`.env.example`: `dev-only-client-key-public`) | **Public** key for the browser SDKs, at least 16 characters. Unset → the browser endpoint does not exist. Must differ from `SDK_API_KEY`, `INTEGRATION_API_KEY` and `JWT_SECRET`, or the API refuses to start |
+| `CLIENT_ALLOWED_ORIGINS` | — (required with `CLIENT_API_KEY`) | Comma-separated exact origins (`https://app.example.com,http://localhost:5173`), or `*` alone for any site. Paths, wildcard subdomains and `null` are refused at boot |
+| `CLIENT_REQUIRE_SIGNED_CONTEXT` | `true` | `true`: an identified browser user must arrive as a token from `signContext()`. `false` accepts a plain user id — fine for a demo, unsafe for real users |
 
 ### Credentials, and why the placeholders are safe
 
@@ -755,6 +991,11 @@ Set ALLOW_DEV_CREDENTIALS=true only for a throwaway local stack.
 ```
 
 `docker-compose.yml` sets it, because that stack is throwaway by design. **Nothing else should.**
+
+The client key's placeholder (`dev-only-client-key-public`) is deliberately not in that guard: the
+client key is public by design — it ships in every page that uses it — so a known value grants
+nothing a real one would not. The origin allowlist and signed identities are what protect the
+browser endpoint. Generate a fresh one for a deployment anyway, so it can be rotated on its own.
 A deployment that forgets to supply a real secret therefore fails loudly at boot instead of
 starting up unauthenticated — the failure mode you want, rather than the silent one.
 

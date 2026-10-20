@@ -42,7 +42,7 @@ export function randomUser() {
  */
 const SETUP_TAGS = { endpoint: 'setup' };
 
-function adminToken() {
+export function adminToken() {
   const res = http.post(
     `${API_URL}/api/auth/login`,
     JSON.stringify({ email: ADMIN_EMAIL, password: ADMIN_PASSWORD }),
@@ -131,21 +131,23 @@ export function recordAndCheck(res) {
  *
  * `counters` exists because a chaos run's whole point is a custom counter — and
  * a counter that only lands in the JSON is a counter nobody reads. Anything a
- * run asserts on has to be visible in the output a human looks at.
+ * run asserts on has to be visible in the output a human looks at — which is
+ * also why `phases` exists: when a gate applies to a tagged slice of server_ms,
+ * that slice is printed beside the overall figures.
  */
 export function saveSummary(
   name,
   data,
-  { counters = [], title = 'results', nfr = false, target = '' } = {},
+  { counters = [], title = 'results', nfr = false, target = '', endpoint = 'evaluate', phases = [] } = {},
 ) {
   return {
     [`/scripts/results/${name}.json`]: JSON.stringify(data, null, 2),
-    stdout: textSummary(data, counters, title, nfr, target),
+    stdout: textSummary(data, counters, title, nfr, target, endpoint, phases),
   };
 }
 
 /** A compact summary; k6's own is verbose and hard to paste into a write-up. */
-function textSummary(data, counters, title, nfr, target) {
+function textSummary(data, counters, title, nfr, target, endpoint, phases) {
   const m = data.metrics;
   const get = (metric, field) => (m[metric] && m[metric].values[field] != null ? m[metric].values[field] : NaN);
   const ms = (v) => (Number.isNaN(v) ? '   n/a' : `${v.toFixed(2)} ms`);
@@ -153,7 +155,7 @@ function textSummary(data, counters, title, nfr, target) {
   // The sub-metric exists because each script sets a threshold on it. Falling
   // back keeps the summary honest rather than printing n/a if that ever changes.
   const failedRate = (() => {
-    const scoped = get('http_req_failed{endpoint:evaluate}', 'rate');
+    const scoped = get(`http_req_failed{endpoint:${endpoint}}`, 'rate');
     return Number.isNaN(scoped) ? get('http_req_failed', 'rate') : scoped;
   })();
 
@@ -182,6 +184,8 @@ function textSummary(data, counters, title, nfr, target) {
     // invite reading a deliberately relaxed number as a missed requirement.
     `  server_ms      p99  ${ms(get('server_ms', 'p(99)'))}${nfr ? '   <- NFR-01' : ''}`,
     `  server_ms      max  ${ms(get('server_ms', 'max'))}`,
+    // [label, sub-metric, stat, note] — e.g. the blackout gate's steady state.
+    ...phases.map(([label, metric, stat, note]) => `  ${label.padEnd(15)}${stat.replace('p(99)', 'p99').padEnd(5)}${ms(get(metric, stat))}${note ? `   ${note}` : ''}`),
     '',
     `  round trip     p95  ${ms(get('http_req_duration', 'p(95)'))}`,
     `  round trip     p99  ${ms(get('http_req_duration', 'p(99)'))}`,

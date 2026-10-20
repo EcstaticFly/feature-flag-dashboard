@@ -1,5 +1,12 @@
 import 'dotenv/config';
 import { z } from 'zod';
+import { parseAllowedOrigins } from './client/origins.js';
+
+/**
+ * An empty variable (`CLIENT_API_KEY=` in a .env file) means "not set". Without
+ * this, an empty optional value would fail its own length check and stop boot.
+ */
+const emptyAsUnset = (value: unknown) => (value === '' ? undefined : value);
 
 const envSchema = z.object({
   PORT: z.coerce.number().int().positive().default(4000),
@@ -54,6 +61,34 @@ const envSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
+
+  /**
+   * The browser SDK's key. PUBLIC by design — it ships inside web pages — so it
+   * grants nothing but reading the evaluated on/off values of flags an admin
+   * has exposed to browsers. Unset: the browser API is not mounted at all, so
+   * an existing deployment is exactly as it was.
+   */
+  CLIENT_API_KEY: z.preprocess(emptyAsUnset, z.string().min(16, 'must be at least 16 characters').optional()),
+  /** Which websites may call the browser API. See src/client/origins.ts. */
+  CLIENT_ALLOWED_ORIGINS: z.preprocess(emptyAsUnset, z.string().optional()).transform((raw, ctx) => {
+    if (raw === undefined) return undefined;
+    const parsed = parseAllowedOrigins(raw);
+    if (!parsed.ok) {
+      ctx.addIssue({ code: 'custom', message: parsed.error });
+      return z.NEVER;
+    }
+    return parsed.origins;
+  }),
+  /**
+   * Whether a browser must present a token signed by the host's server before
+   * it may say who the user is. On by default: without it, anyone holding the
+   * public key could ask "is user X on this allowlist?" for any X. Anonymous
+   * requests never need a token.
+   */
+  CLIENT_REQUIRE_SIGNED_CONTEXT: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
 });
 
 export type Config = z.infer<typeof envSchema>;
@@ -107,7 +142,34 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     );
   }
 
-  return parsed.data;
+  const config = parsed.data;
+
+  if (config.CLIENT_API_KEY !== undefined) {
+    if (config.CLIENT_ALLOWED_ORIGINS === undefined) {
+      throw new Error(
+        'Invalid environment configuration:\n' +
+          '  CLIENT_ALLOWED_ORIGINS: required when CLIENT_API_KEY is set — list the origins that ' +
+          'may call the browser API, e.g. https://app.example.com,http://localhost:5173',
+      );
+    }
+    // The client key is published in every page that uses it. If it equals a
+    // secret, publishing it publishes the secret.
+    const secrets: Record<string, string> = {
+      SDK_API_KEY: config.SDK_API_KEY,
+      INTEGRATION_API_KEY: config.INTEGRATION_API_KEY,
+      JWT_SECRET: config.JWT_SECRET,
+    };
+    for (const [name, value] of Object.entries(secrets)) {
+      if (config.CLIENT_API_KEY === value) {
+        throw new Error(
+          `Refusing to start: CLIENT_API_KEY equals ${name}. The client key is public — it ships ` +
+            'inside web pages — so it must never be the same value as a secret. Generate a new one.',
+        );
+      }
+    }
+  }
+
+  return config;
 }
 
 /** The boolean an unreadable flag evaluates to, per the configured policy. */

@@ -1,13 +1,16 @@
-import { SUPPORTED_OPERATORS } from '@feature-flags/core';
+import { FLAG_KEY_PATTERN, MAX_FLAG_KEY_LENGTH, SUPPORTED_OPERATORS } from '@feature-flags/core';
 import { z } from 'zod';
 
-/** Slug format — lowercase letters/digits in hyphen-separated groups. */
-export const FLAG_KEY_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+/**
+ * Slug format — lowercase letters/digits in hyphen-separated groups. Defined in
+ * core so the browser SDK filters responses with exactly the same rule.
+ */
+export { FLAG_KEY_PATTERN };
 
 export const flagKeySchema = z
   .string()
   .min(1)
-  .max(64)
+  .max(MAX_FLAG_KEY_LENGTH)
   .regex(FLAG_KEY_PATTERN, 'must be lowercase letters, numbers and single hyphens');
 
 export const targetingRuleSchema = z
@@ -41,6 +44,8 @@ export const createFlagSchema = z.strictObject({
   enabled: z.boolean().default(false),
   rolloutPercentage: rolloutPercentageSchema.default(0),
   targetingRules: targetingRulesSchema.default([]),
+  // Server-only unless an admin says otherwise.
+  clientSide: z.boolean().default(false),
 });
 
 /**
@@ -54,6 +59,7 @@ export const updateFlagSchema = z
     enabled: z.boolean(),
     rolloutPercentage: rolloutPercentageSchema,
     targetingRules: targetingRulesSchema,
+    clientSide: z.boolean(),
   })
   .partial()
   .refine((patch) => Object.keys(patch).length > 0, {

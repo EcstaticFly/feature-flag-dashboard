@@ -21,6 +21,7 @@ const ACTIONS = {
 const TRACKED: (keyof Flag)[] = [
   'enabled',
   'rolloutPercentage',
+  'clientSide',
   'name',
   'description',
   'targetingRules',
@@ -32,9 +33,20 @@ const LABELS: Partial<Record<keyof Flag, string>> = {
   name: 'Name',
   description: 'Description',
   targetingRules: 'Targeting rules',
+  clientSide: 'Browser SDKs',
 };
 
+/**
+ * Entries written before browser SDKs existed have no `clientSide` at all.
+ * Those flags were server-only, so absent reads as false — otherwise the first
+ * change after the upgrade would show a phantom "— → server only".
+ */
+function normalise(field: keyof Flag, value: unknown): unknown {
+  return field === 'clientSide' ? value === true : value;
+}
+
 function display(field: keyof Flag, value: unknown): string {
+  if (field === 'clientSide') return value === true ? 'exposed' : 'server only';
   if (value === null || value === undefined || value === '') return '—';
   if (field === 'enabled') return value ? 'on' : 'off';
   if (field === 'rolloutPercentage') return `${value as number}%`;
@@ -51,7 +63,9 @@ function changes(entry: AuditEntry): { field: keyof Flag; from: string; to: stri
   if (!oldValue || !newValue) return [];
 
   return TRACKED.filter(
-    (field) => JSON.stringify(oldValue[field]) !== JSON.stringify(newValue[field]),
+    (field) =>
+      JSON.stringify(normalise(field, oldValue[field])) !==
+      JSON.stringify(normalise(field, newValue[field])),
   ).map((field) => ({
     field,
     from: display(field, oldValue[field]),
